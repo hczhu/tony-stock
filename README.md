@@ -8,8 +8,6 @@ This repo helps my stock investing process. It heavily depends on AI agents, Cod
   git@github.com:hczhu/Logseq-files.git
   https://github.com/hczhu/code_recipes
   ```
-- Install Claude Code CLI
-- Install OpenAI Codex CLI
 - Install gws cli skills from https://github.com/googleworkspace/cli/tree/main/skills
 - Ask me to auth into gws
 
