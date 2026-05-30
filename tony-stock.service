@@ -1,0 +1,13 @@
+[Unit]
+Description=Tony Stock Docker Service
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/hc/tony-stock/run-tony-stock.sh
+ExecStop=docker stop tony-stock
+
+[Install]
+WantedBy=multi-user.target
