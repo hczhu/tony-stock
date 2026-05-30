@@ -20,7 +20,7 @@ COPY nginx-smart-stocker.conf /etc/nginx/sites-available/smart-stocker
 RUN ln -sf /etc/nginx/sites-available/smart-stocker /etc/nginx/sites-enabled/smart-stocker \
     && rm -f /etc/nginx/sites-enabled/default
 
-RUN echo '*/15 * * * * root cd /opt/smart-stock && python3 smart-stocker.py > /tmp/portfolio.html.tmp 2>> /var/log/smart-stocker.log && mv /tmp/portfolio.html.tmp /var/www/smart-stocker/portfolio.html' \
+RUN echo '*/15 * * * * root cd /opt/smart-stock && /usr/local/bin/python3 smart-stocker.py > /tmp/portfolio.html.tmp 2>> /var/log/smart-stocker.log && mv /tmp/portfolio.html.tmp /var/www/smart-stocker/portfolio.html' \
     > /etc/cron.d/smart-stocker \
     && chmod 0644 /etc/cron.d/smart-stocker
 
