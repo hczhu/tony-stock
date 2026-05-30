@@ -8,7 +8,7 @@ This repo helps my stock investing process. It heavily depends on AI agents, Cod
   git@github.com:hczhu/Logseq-files.git
   https://github.com/hczhu/code_recipes
   ```
-- Install gws cli skills gloally (not only for the user or the project) from https://github.com/googleworkspace/cli/tree/main/skills
+- Install gws cli skills for the user (not only for the project) from https://github.com/googleworkspace/cli/tree/main/skills
 - Ask me to auth into gws
 
 ## Stock trading record spreadsheet
