@@ -18,6 +18,6 @@ clone_or_pull() {
 clone_or_pull git@github.com:hczhu/Logseq-files.git        Logseq-files
 clone_or_pull https://github.com/hczhu/code_recipes         code_recipes
 clone_or_pull git@github.com:hczhu/smart-stock.git          smart-stock
-clone_or_pull git@github.com:hczhu/stock-research-memos.git stock-research-memos
+clone_or_pull git@github.com:hczhu/stock-research.git stock-research
 
 echo "Done."
