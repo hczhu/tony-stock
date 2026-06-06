@@ -26,6 +26,14 @@ RUN echo '*/15 * * * * root cd /opt/smart-stock && /usr/local/bin/python3 smart-
     > /etc/cron.d/smart-stocker \
     && chmod 0644 /etc/cron.d/smart-stocker
 
+# Daily: refresh the stock-screening trend reports (one HTML per sheet) into
+# /var/www/smart-stocker/screening/. Uses the gspread backend (service-account
+# key already in the image); snapshot goes to /tmp so it never dirties the
+# mounted /opt/smart-stock git tree.
+RUN echo '0 6 * * * root cd /opt/smart-stock && /usr/local/bin/python3 screening_cube_viz.py --fetch --snapshot /tmp/screening_snapshot.json >> /var/log/screening-cube.log 2>&1' \
+    > /etc/cron.d/screening-cube \
+    && chmod 0644 /etc/cron.d/screening-cube
+
 COPY .smart-stocker-google-api.json /root/.smart-stocker-google-api.json
 COPY .yahoo-finance.api-key.txt /root/.yahoo-finance.api-key.txt
 
