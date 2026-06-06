@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     cron \
     git \
     curl \
+    poppler-utils \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
