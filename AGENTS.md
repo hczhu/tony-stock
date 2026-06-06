@@ -30,11 +30,14 @@ bash deploy-tony-stock.sh   # build + install systemd service + start
 - `/home/hc/tony-stock/smart-stock` → `/opt/smart-stock` (live code, no rebuild needed for app changes)
 - `/var/www/smart-stocker` → `/var/www/smart-stocker` (HTML output, persisted on host)
 
-**Cron job** (every 15 min inside container): runs `smart-stocker.py`, writes stdout to a temp file, and atomically replaces `portfolio.html` only on success.
+**Cron jobs** (inside container, defined in `tony-stock.Dockerfile`):
+- `smart-stocker` (every 15 min): runs `smart-stocker.py`, writes stdout to a temp file, and atomically replaces `portfolio.html` only on success.
+- `screening-cube` (daily 06:00 UTC): runs `screening_cube_viz.py --fetch` to regenerate the stock-screening trend reports (see below).
 
 **Nginx** listens on port 8888 (host network):
 - `http://<host>:8888/` → redirects to `portfolio.html`
 - `http://<host>:8888/smart-stocker/` → directory listing of all output files
+- `http://<host>:8888/smart-stocker/screening/` → stock-screening trend reports (`index.html` + one per sheet)
 
 ## Credentials (build-time, never committed)
 
@@ -50,6 +53,40 @@ bash deploy-tony-stock.sh   # build + install systemd service + start
 ## Stock trading spreadsheet
 
 Spreadsheet ID: `1oxtcfl2V4ff3eUMW4954IChpx9eFAoB83QMrZERPSgA`. One sheet per year (`txn.YYYY`), rows in reverse chronological order. When adding rows: copy `Name` and `Diversity` from prior rows with the same ticker; keep `Date` as a date type (not string). Use `gws sheets` commands to read/write via the Google Workspace CLI (`~/.local/bin/gws`).
+
+## Stock screening trend reports
+
+`smart-stock/screening_cube_viz.py` visualizes the "Stock screening" spreadsheet
+(ID `1K4m1h_0RqYlouCKhVP4WXpN_UtSJHnfVoLucvYYGhYk`), which is a `company × metric ×
+quarter` data cube — each tab stacks quarterly slabs (quarter label in column A,
+companies down the rows, metrics across the columns).
+
+It generates one self-contained HTML report per cube-shaped tab (plus an
+`index.html`), each with two tabs: **Trends** (small-multiples line charts, one
+panel per metric) and **Scatter** (Gapminder-style X/Y/size bubbles with a
+quarter slider). Tabs that aren't a quarter×company×metric cube (e.g. Payment,
+DD) are skipped.
+
+```bash
+# default: render from the committed snapshot, no network → /var/www/smart-stocker/screening/
+python3 screening_cube_viz.py
+python3 screening_cube_viz.py --fetch          # refresh data from the sheet first
+python3 screening_cube_viz.py --sheets SaaS    # limit to specific tabs
+python3 screening_cube_viz.py --out /tmp/x     # render elsewhere
+```
+
+- **Data backends** (`--backend`, default `auto`): `gspread` (uses the
+  service-account key, works in the container) or `gws` (the CLI, host/dev use).
+  `auto` picks `gspread` when the key exists.
+- **Snapshot**: committed at `smart-stock/data/screening_snapshot.json` so the
+  default run needs no network. The daily cron writes its snapshot to `/tmp`
+  instead, to avoid dirtying the mounted `/opt/smart-stock` git tree.
+- The daily refresh happens automatically via the `screening-cube` cron. To
+  refresh on demand:
+
+```bash
+docker exec tony-stock bash -c "cd /opt/smart-stock && python3 screening_cube_viz.py --fetch --snapshot /tmp/screening_snapshot.json"
+```
 
 ## Updating the web server after a smart-stock code change
 
