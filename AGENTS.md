@@ -56,6 +56,8 @@ Spreadsheet ID: `1oxtcfl2V4ff3eUMW4954IChpx9eFAoB83QMrZERPSgA`. One sheet per ye
 
 For **real-time stock prices**, read the `Prices` sheet of the same spreadsheet (columns: `Ticker`, `Price`, `Change`, `Marketcap $B`, `Name`, `Premium%`). It has live quotes — use it to value positions / compute unrealized P&L instead of the IBKR MCP or external price APIs.
 
+For **trade confirmations**, search Gmail with the label `ib-trades` (e.g. `label:ib-trades`, or `label:ib-trades newer_than:7d`). IBKR's TradingAssistant sends one email per fill; the full trade is in the subject line, e.g. `BOUGHT 10 RBLX Jan21'28 140 CALL @ 3.81` or `SOLD 200 MINT @ 100.52`. These subjects carry the full option contract details (strike, expiry, call/put) — use them to reconcile or back-fill the transaction sheet.
+
 ## Stock screening trend reports
 
 `smart-stock/screening_cube_viz.py` visualizes the "Stock screening" spreadsheet
