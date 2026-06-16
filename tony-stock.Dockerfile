@@ -16,7 +16,15 @@ RUN pip install --no-cache-dir \
     oauth2client \
     requests
 
+# Headless-browser scraper (scrapers/scrape_urls.py). Installs Playwright and
+# Chromium with its system dependencies.
+RUN pip install --no-cache-dir playwright \
+    && playwright install --with-deps chromium
+
 RUN mkdir -p /opt/smart-stock /var/www/smart-stocker
+
+# Standalone utility scripts (e.g. the headless-browser scraper).
+COPY scrapers/ /opt/scrapers/
 
 COPY nginx-smart-stocker.conf /etc/nginx/sites-available/smart-stocker
 RUN ln -sf /etc/nginx/sites-available/smart-stocker /etc/nginx/sites-enabled/smart-stocker \
