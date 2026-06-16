@@ -35,6 +35,22 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
+# Record of successful downloads, written into the output dir. One line per
+# download: "<saved filename>\t<URL>". Used to skip already-downloaded URLs.
+LOG_NAME = "download_log.tsv"
+
+
+def load_downloaded_urls(log_path):
+    """Return the set of URLs already recorded in the download log."""
+    seen = set()
+    if log_path.exists():
+        with log_path.open(encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 2 and parts[1]:
+                    seen.add(parts[1])
+    return seen
+
 EXT_BY_CT = {
     "application/pdf": ".pdf",
     "text/html": ".html",
@@ -184,26 +200,38 @@ def main():
         print("No URLs on stdin.", file=sys.stderr)
         return 1
 
+    log_path = out_dir / LOG_NAME
+    seen = load_downloaded_urls(log_path)
+
     timeout_ms = int(args.timeout * 1000)
     ok = 0
+    skipped = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-http2"],
         )
         context = browser.new_context(user_agent=args.user_agent, accept_downloads=True)
-        for url in urls:
-            try:
-                dest, size, kind = scrape_one(context, url, out_dir, timeout_ms)
-                print(f"OK   [{kind:8}] {url} -> {dest} ({size:,} bytes)")
-                ok += 1
-            except Exception as e:  # noqa: BLE001 - keep going on per-URL failures
-                print(f"FAIL            {url} :: {e}", file=sys.stderr)
+        with log_path.open("a", encoding="utf-8") as log:
+            for url in urls:
+                if url in seen:
+                    print(f"SKIP            {url} (already in {LOG_NAME})")
+                    skipped += 1
+                    continue
+                try:
+                    dest, size, kind = scrape_one(context, url, out_dir, timeout_ms)
+                    print(f"OK   [{kind:8}] {url} -> {dest} ({size:,} bytes)")
+                    log.write(f"{dest.name}\t{url}\n")
+                    log.flush()
+                    seen.add(url)
+                    ok += 1
+                except Exception as e:  # noqa: BLE001 - keep going on per-URL failures
+                    print(f"FAIL            {url} :: {e}", file=sys.stderr)
         context.close()
         browser.close()
 
-    print(f"\nDone: {ok}/{len(urls)} saved to {out_dir}")
-    return 0 if ok == len(urls) else 2
+    print(f"\nDone: {ok} saved, {skipped} skipped, {len(urls) - ok - skipped} failed -> {out_dir}")
+    return 0 if ok + skipped == len(urls) else 2
 
 
 if __name__ == "__main__":
