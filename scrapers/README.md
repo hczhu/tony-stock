@@ -19,6 +19,13 @@ If navigation fails at the network layer (e.g. `ERR_HTTP2_PROTOCOL_ERROR` on
 some CDNs), it falls back to the browser context's HTTP client (shares
 cookies/UA); those rows are tagged `file*`.
 
+### Download log (skip already-downloaded URLs)
+
+Each successful download appends a line to `download_log.tsv` in the output
+dir: `<saved filename>\t<URL>`. On startup the script reads this log and
+**skips** any URL already present, so re-running the same `urls.txt` only
+fetches new ones. Delete the log (or the line) to force a re-download.
+
 ### Usage
 
 ```bash
