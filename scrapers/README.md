@@ -19,6 +19,23 @@ If navigation fails at the network layer (e.g. `ERR_HTTP2_PROTOCOL_ERROR` on
 some CDNs), it falls back to the browser context's HTTP client (shares
 cookies/UA); those rows are tagged `file*`.
 
+### Rendering JS pages & bot walls
+
+To capture what a human actually sees, the scraper runs the **full Chromium in
+new-headless mode** (`channel="chromium"` — the default `headless_shell`
+advertises `HeadlessChrome` and is trivially flagged), with the automation flag
+hidden and a realistic context (locale / timezone / `Accept-Language`). For
+HTML pages it waits for `networkidle` and then waits out interstitial
+bot-checks (e.g. Cloudflare's "Just a moment…") before saving.
+
+Some sites use a **strict bot wall** (notably Cloudflare's *managed challenge*)
+that headless browsers — even patched ones — cannot pass. When the challenge
+never clears, the row is tagged **`challenge`** and printed as a `WARN`: the
+saved `.html` is the placeholder, *not* the real content, so it is **not**
+written to `download_log.tsv` (a later run will retry). These sites simply
+can't be scraped with this tool; use a real browser session or a dedicated
+anti-bot service.
+
 ### Download log (skip already-downloaded URLs)
 
 Each successful download appends a line to `download_log.tsv` in the output
