@@ -111,6 +111,47 @@ def unique_path(out_dir, name):
     return dest
 
 
+CHALLENGE_TITLE_RE = re.compile(r"just a moment|attention required|verif|checking your browser", re.I)
+
+
+def wait_out_challenge(page, timeout_ms):
+    """Wait out an interstitial bot-check (e.g. Cloudflare 'Just a moment…').
+
+    Such pages render a placeholder, run a JS challenge, then navigate to the
+    real content. Saving immediately captures only the placeholder. Best-effort:
+    poll until the challenge markers disappear or the time budget is exhausted.
+    """
+    import time
+
+    def in_challenge():
+        try:
+            if CHALLENGE_TITLE_RE.search(page.title() or ""):
+                return True
+        except PWError:
+            return False
+        try:
+            return page.query_selector(
+                "#challenge-running, #cf-challenge-running, #cf-please-wait, "
+                "script[src*='challenge-platform']"
+            ) is not None
+        except PWError:
+            return False
+
+    deadline = time.time() + min(timeout_ms / 1000.0, 30)
+    while time.time() < deadline and in_challenge():
+        try:
+            page.wait_for_timeout(1000)
+        except PWError:
+            break
+        try:
+            page.wait_for_load_state("networkidle", timeout=3000)
+        except PWTimeout:
+            pass
+    # True when an interstitial bot-wall (e.g. Cloudflare managed challenge)
+    # never cleared — the page we can capture is just the placeholder.
+    return in_challenge()
+
+
 def scrape_one(context, url, out_dir, timeout_ms):
     """Fetch one URL; return (dest_path, size_bytes, kind)."""
     page = context.new_page()
@@ -163,12 +204,13 @@ def scrape_one(context, url, out_dir, timeout_ms):
                 page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 10000))
             except PWTimeout:
                 pass
+            blocked = wait_out_challenge(page, timeout_ms)
             name = derive_name(url, content_type="text/html")
             if not name.lower().endswith((".html", ".htm")):
                 name += ".html"
             dest = unique_path(out_dir, name)
             dest.write_text(page.content(), encoding="utf-8")
-            return dest, dest.stat().st_size, "html"
+            return dest, dest.stat().st_size, "challenge" if blocked else "html"
 
         body = resp.body()
         name = derive_name(
@@ -185,7 +227,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--output", default="scraped", help="output directory (default: ./scraped)")
     ap.add_argument("--timeout", type=float, default=60.0, help="per-URL timeout in seconds (default: 60)")
-    ap.add_argument("--user-agent", default=DEFAULT_UA, help="override the browser User-Agent")
+    ap.add_argument("--user-agent", default=None,
+                    help="override the browser User-Agent (default: the browser's native UA)")
     args = ap.parse_args()
 
     out_dir = pathlib.Path(args.output)
@@ -206,12 +249,35 @@ def main():
     timeout_ms = int(args.timeout * 1000)
     ok = 0
     skipped = 0
+    challenged = 0
     with sync_playwright() as p:
+        # Use the full Chromium build in new-headless mode (channel="chromium").
+        # The default headless_shell advertises "HeadlessChrome" and is trivially
+        # flagged by bot walls (Cloudflare etc.); also hide the automation flag.
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-http2"],
+            channel="chromium",
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-http2",
+                "--disable-blink-features=AutomationControlled",
+            ],
         )
-        context = browser.new_context(user_agent=args.user_agent, accept_downloads=True)
+        ctx_kwargs = dict(
+            accept_downloads=True,
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+            viewport={"width": 1280, "height": 900},
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        if args.user_agent:
+            ctx_kwargs["user_agent"] = args.user_agent
+        context = browser.new_context(**ctx_kwargs)
+        # Belt-and-suspenders: don't expose navigator.webdriver.
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
         with log_path.open("a", encoding="utf-8") as log:
             for url in urls:
                 if url in seen:
@@ -220,17 +286,32 @@ def main():
                     continue
                 try:
                     dest, size, kind = scrape_one(context, url, out_dir, timeout_ms)
-                    print(f"OK   [{kind:8}] {url} -> {dest} ({size:,} bytes)")
-                    log.write(f"{dest.name}\t{url}\n")
-                    log.flush()
-                    seen.add(url)
-                    ok += 1
+                    if kind == "challenge":
+                        # A bot-wall (e.g. Cloudflare managed challenge) never
+                        # cleared; the saved file is a placeholder, not the real
+                        # content. Flag it and DON'T record it in the log, so a
+                        # later run retries instead of treating it as done.
+                        print(f"WARN [challenge] {url} -> {dest} ({size:,} bytes) "
+                              ":: bot-check not cleared; saved page is a placeholder, "
+                              "not the content a human sees", file=sys.stderr)
+                        challenged += 1
+                    else:
+                        print(f"OK   [{kind:8}] {url} -> {dest} ({size:,} bytes)")
+                        log.write(f"{dest.name}\t{url}\n")
+                        log.flush()
+                        seen.add(url)
+                        ok += 1
                 except Exception as e:  # noqa: BLE001 - keep going on per-URL failures
                     print(f"FAIL            {url} :: {e}", file=sys.stderr)
         context.close()
         browser.close()
 
-    print(f"\nDone: {ok} saved, {skipped} skipped, {len(urls) - ok - skipped} failed -> {out_dir}")
+    failed = len(urls) - ok - skipped - challenged
+    summary = f"\nDone: {ok} saved, {skipped} skipped"
+    if challenged:
+        summary += f", {challenged} bot-blocked"
+    summary += f", {failed} failed -> {out_dir}"
+    print(summary)
     return 0 if ok + skipped == len(urls) else 2
 
 
