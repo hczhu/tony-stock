@@ -5,9 +5,16 @@ RUN apt-get update && apt-get install -y \
     cron \
     git \
     curl \
+    unzip \
     poppler-utils \
     imagemagick \
     && rm -rf /var/lib/apt/lists/*
+
+# AWS CLI v2 (official installer).
+RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws
 
 RUN pip install --no-cache-dir \
     jinja2 \
@@ -44,6 +51,7 @@ RUN echo '0 6 * * * root cd /opt/smart-stock && /usr/local/bin/python3 screening
 
 COPY .smart-stocker-google-api.json /root/.smart-stocker-google-api.json
 COPY .yahoo-finance.api-key.txt /root/.yahoo-finance.api-key.txt
+COPY .aws-credentials /root/.aws/credentials
 
 COPY entrypoint-tony-stock.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
