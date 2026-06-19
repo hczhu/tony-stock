@@ -1,6 +1,7 @@
 # Credentials
 .smart-stocker-google-api.json
 .yahoo-finance.api-key.txt
+.aws-credentials
 
 # Cloned sub-repos
 smart-stock/
