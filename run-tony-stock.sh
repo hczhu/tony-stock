@@ -13,4 +13,5 @@ docker run -d \
     --restart unless-stopped \
     -v /var/www/smart-stocker:/var/www/smart-stocker \
     -v /home/hc/tony-stock/smart-stock:/opt/smart-stock \
+    -v /home/hc/tony-stock:/opt/tony-stock \
     tony-stock
