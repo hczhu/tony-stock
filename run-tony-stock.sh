@@ -14,4 +14,7 @@ docker run -d \
     -v /var/www/smart-stocker:/var/www/smart-stocker \
     -v /home/hc/tony-stock/smart-stock:/opt/smart-stock \
     -v /home/hc/tony-stock:/opt/tony-stock \
+    -v /home/hc/.smart-stocker-google-api.json:/root/.smart-stocker-google-api.json:ro \
+    -v /home/hc/.yahoo-finance.api-key.txt:/root/.yahoo-finance.api-key.txt:ro \
+    -v /home/hc/.aws:/root/.aws:ro \
     tony-stock

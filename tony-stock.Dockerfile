@@ -49,9 +49,9 @@ RUN echo '0 6 * * * root cd /opt/smart-stock && /usr/local/bin/python3 screening
     > /etc/cron.d/screening-cube \
     && chmod 0644 /etc/cron.d/screening-cube
 
-COPY .smart-stocker-google-api.json /root/.smart-stocker-google-api.json
-COPY .yahoo-finance.api-key.txt /root/.yahoo-finance.api-key.txt
-COPY .aws-credentials /root/.aws/credentials
+# Credentials are NOT baked into the image; run-tony-stock.sh bind-mounts them
+# read-only at runtime (~/.smart-stocker-google-api.json, ~/.yahoo-finance.api-key.txt,
+# ~/.aws) so secrets never end up in an image layer.
 
 COPY entrypoint-tony-stock.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

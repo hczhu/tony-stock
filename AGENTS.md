@@ -39,11 +39,13 @@ bash deploy-tony-stock.sh   # build + install systemd service + start
 - `http://<host>:8888/smart-stocker/` → directory listing of all output files
 - `http://<host>:8888/smart-stocker/screening/` → stock-screening trend reports (`index.html` + one per sheet)
 
-## Credentials (build-time, never committed)
+## Credentials (runtime bind-mounts, never baked into the image)
 
-`build-tony-stock.sh` copies these from `~` into the build context and removes them on exit:
-- `~/.smart-stocker-google-api.json` → `/root/` in image (Google Sheets access via gspread/oauth2client)
-- `~/.yahoo-finance.api-key.txt` → `/root/` in image (Yahoo Finance API)
+`run-tony-stock.sh` bind-mounts these from `~` into the container **read-only**
+at runtime, so secrets never end up in an image layer:
+- `~/.smart-stocker-google-api.json` → `/root/.smart-stocker-google-api.json` (Google Sheets via gspread/oauth2client)
+- `~/.yahoo-finance.api-key.txt` → `/root/.yahoo-finance.api-key.txt` (Yahoo Finance API)
+- `~/.aws` → `/root/.aws` (AWS CLI credentials/config)
 
 ## Stock trading advice
 
