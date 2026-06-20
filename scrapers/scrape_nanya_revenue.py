@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Scrape Nanya Technology monthly consolidated revenue and append to Google Sheets.
+
+Source:  https://www.nanya.com/en/IR/36/Monthly%20Revenue?Year=YYYY  (one page per year)
+Target:  "Nanya monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY
+
+Sheet columns: Year | Month | Revenue | MoM% | YoY%
+  Year    — integer (2013, 2014, …)
+  Month   — integer (1–12)
+  Revenue — integer, NTD thousands (no commas; as reported on the page)
+  MoM%    — float string with sign, no "%" suffix (e.g. "27.4", "-3.1")
+  YoY%    — same
+
+Idempotent: reads existing (Year, Month) pairs from the sheet on start-up and
+only appends rows that are not already present. Safe to re-run at any time.
+
+    python3 scrape_nanya_revenue.py                  # 2013 to current year
+    python3 scrape_nanya_revenue.py --year 2026      # single year
+    python3 scrape_nanya_revenue.py --start 2020     # from 2020 onward
+
+If the page requires JavaScript rendering (table not found with plain HTTP),
+re-run inside the tony-stock container using the --playwright flag.
+"""
+import argparse
+import os
+import re
+import sys
+import time
+from datetime import datetime
+
+import requests
+from bs4 import BeautifulSoup
+
+SPREADSHEET_ID = "16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY"
+SHEET_NAME = "Nanya monthly revenue"
+BASE_URL = "https://www.nanya.com/en/IR/36/Monthly%20Revenue"
+CREDENTIAL_PATH = os.environ.get(
+    "SMART_STOCKER_CREDENTIAL",
+    os.path.expanduser("~/.smart-stocker-google-api.json"),
+)
+FIRST_YEAR = 2013
+HEADERS = ["Year", "Month", "Revenue", "MoM%", "YoY%"]
+
+MONTHS = [
+    "January", "February", "March", "April",
+    "May", "June", "July", "August",
+    "September", "October", "November", "December",
+]
+MONTH_NUM = {m: i + 1 for i, m in enumerate(MONTHS)}
+
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nanya.com/en/IR/",
+}
+
+
+# --------------------------------------------------------------------------- #
+# Scraping
+# --------------------------------------------------------------------------- #
+
+def _parse_table(html):
+    """Extract rows from the monthly revenue HTML table.
+
+    Returns a list of [year_str, month_num_str, revenue_str, mom_str, yoy_str],
+    or None if no table was found (page likely requires JS).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = (
+        soup.find("table", class_=re.compile(r"revenue|monthly|table", re.I))
+        or soup.find("table")
+    )
+    if not table:
+        return None
+
+    rows = []
+    for tr in table.find_all("tr"):
+        tds = tr.find_all("td")
+        if not tds:
+            continue
+        month_text = tds[0].get_text(strip=True)
+        if month_text not in MONTH_NUM:
+            continue
+
+        revenue_raw = tds[1].get_text(strip=True).replace(",", "") if len(tds) > 1 else ""
+        if not revenue_raw or not re.search(r"\d", revenue_raw):
+            continue  # future month with no data yet
+
+        mom = tds[2].get_text(strip=True).rstrip("%") if len(tds) > 2 else ""
+        yoy = tds[3].get_text(strip=True).rstrip("%") if len(tds) > 3 else ""
+
+        rows.append([MONTH_NUM[month_text], revenue_raw, mom, yoy])
+
+    return rows
+
+
+def fetch_year_requests(year, session):
+    """Return parsed rows for *year* using plain HTTP, or None if JS is needed."""
+    url = f"{BASE_URL}?Year={year}"
+    resp = session.get(url, timeout=30)
+    resp.raise_for_status()
+    return _parse_table(resp.text)
+
+
+def fetch_year_playwright(year):
+    """Return parsed rows for *year* using a headless Chromium browser."""
+    from playwright.sync_api import sync_playwright
+
+    url = f"{BASE_URL}?Year={year}"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            channel="chromium",
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        ctx = browser.new_context(
+            locale="en-US",
+            viewport={"width": 1280, "height": 900},
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        )
+        page = ctx.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+        html = page.content()
+        ctx.close()
+        browser.close()
+    return _parse_table(html)
+
+
+# --------------------------------------------------------------------------- #
+# Google Sheets
+# --------------------------------------------------------------------------- #
+
+def _open_worksheet(credential_path):
+    """Return the target gspread Worksheet, creating it (with headers) if absent."""
+    import gspread
+    from oauth2client.service_account import ServiceAccountCredentials
+
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(credential_path, scope)
+    book = gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    try:
+        ws = book.worksheet(SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = book.add_worksheet(title=SHEET_NAME, rows=2000, cols=len(HEADERS))
+        ws.append_row(HEADERS, value_input_option="USER_ENTERED")
+        print(f"  created sheet '{SHEET_NAME}' with headers", file=sys.stderr)
+    return ws
+
+
+def get_existing_keys(ws):
+    """Return {(year_str, month_str)} for rows already in the sheet."""
+    all_rows = ws.get_all_values()
+    return {
+        (r[0], r[1])
+        for r in all_rows[1:]          # skip header
+        if len(r) >= 2 and r[0] and r[1]
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--year", type=int, help="scrape a single year only")
+    ap.add_argument("--start", type=int, default=FIRST_YEAR,
+                    help=f"first year to scrape (default: {FIRST_YEAR})")
+    ap.add_argument("--end", type=int, default=datetime.now().year,
+                    help="last year to scrape (default: current year)")
+    ap.add_argument("--credential", default=CREDENTIAL_PATH,
+                    help="service-account JSON key (default: %(default)s)")
+    ap.add_argument("--playwright", action="store_true",
+                    help="use headless Chromium instead of plain HTTP (for JS-rendered pages)")
+    ap.add_argument("--delay", type=float, default=1.5,
+                    help="seconds between year requests (default: 1.5)")
+    args = ap.parse_args()
+
+    years = [args.year] if args.year else list(range(args.start, args.end + 1))
+
+    print(f"Opening sheet '{SHEET_NAME}' ...", file=sys.stderr)
+    ws = _open_worksheet(args.credential)
+    existing = get_existing_keys(ws)
+    print(f"  {len(existing)} existing row(s)", file=sys.stderr)
+
+    session = None
+    if not args.playwright:
+        session = requests.Session()
+        session.headers.update(_REQUEST_HEADERS)
+
+    js_warning_shown = False
+    total_added = 0
+
+    for year in years:
+        print(f"  {year} ...", file=sys.stderr, end=" ")
+        sys.stderr.flush()
+        try:
+            if args.playwright:
+                raw_rows = fetch_year_playwright(year)
+            else:
+                raw_rows = fetch_year_requests(year, session)
+        except Exception as exc:
+            print(f"FAIL: {exc}", file=sys.stderr)
+            continue
+
+        if raw_rows is None:
+            if not js_warning_shown:
+                print(
+                    "\nWARN: no table found in plain HTML — the page likely requires "
+                    "JavaScript. Re-run with --playwright (inside the tony-stock "
+                    "container where Playwright + Chromium are installed).",
+                    file=sys.stderr,
+                )
+                js_warning_shown = True
+            else:
+                print("no table (JS?)", file=sys.stderr)
+            continue
+
+        # Prepend year to each row and filter already-present (year, month) pairs.
+        full_rows = [[str(year), str(m), *rest] for m, *rest in raw_rows]
+        new_rows = [r for r in full_rows if (r[0], r[1]) not in existing]
+
+        if new_rows:
+            ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+            for r in new_rows:
+                existing.add((r[0], r[1]))
+            total_added += len(new_rows)
+            print(f"appended {len(new_rows)} row(s)", file=sys.stderr)
+        else:
+            print("no new rows", file=sys.stderr)
+
+        time.sleep(args.delay)
+
+    print(f"\nDone: {total_added} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
