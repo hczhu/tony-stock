@@ -4,15 +4,16 @@
 Source:  https://www.nanya.com/en/IR/36/Monthly%20Revenue?Year=YYYY  (one page per year)
 Target:  "Nanya monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY
 
-Sheet columns: Year | Month | Revenue | MoM% | YoY%
-  Year    — integer (2013, 2014, …)
-  Month   — integer (1–12)
-  Revenue — integer, NTD thousands (no commas; as reported on the page)
-  MoM%    — float string with sign, no "%" suffix (e.g. "27.4", "-3.1")
+Sheet columns: Date | Revenue | MoM% | YoY%
+  Date    — "YYYY-MM" string (e.g. "2026-04")
+  Revenue — comma-formatted integer string (e.g. "25,491,201")
+  MoM%    — percentage string with sign and suffix (e.g. "40.3%", "-3.1%")
   YoY%    — same
 
-Idempotent: reads existing (Year, Month) pairs from the sheet on start-up and
-only appends rows that are not already present. Safe to re-run at any time.
+Idempotent: reads existing Date values from the sheet on start-up and only
+inserts rows whose Date is not already present. Safe to re-run at any time.
+Automatically migrates the old 5-column (Year, Month, …) format to this
+4-column format on first run.
 
     python3 scrape_nanya_revenue.py                  # 2013 to current year
     python3 scrape_nanya_revenue.py --year 2026      # single year
@@ -39,7 +40,8 @@ CREDENTIAL_PATH = os.environ.get(
     os.path.expanduser("~/.smart-stocker-google-api.json"),
 )
 FIRST_YEAR = 2013
-HEADERS = ["Year", "Month", "Revenue", "MoM%", "YoY%"]
+HEADERS = ["Date", "Revenue", "MoM%", "YoY%"]
+OLD_HEADERS_PREFIX = ["Year", "Month"]  # detect pre-migration format
 
 MONTHS = [
     "January", "February", "March", "April",
@@ -142,6 +144,20 @@ def fetch_year_playwright(year):
 # Google Sheets
 # --------------------------------------------------------------------------- #
 
+def _fmt_revenue(raw):
+    """'25491201' → '25,491,201'"""
+    try:
+        return f"{int(str(raw).replace(',', '')):,}"
+    except (ValueError, TypeError):
+        return str(raw)
+
+
+def _fmt_pct(raw):
+    """'40.3' or '40.3%' → '40.3%'; empty → ''"""
+    s = str(raw).strip().rstrip("%")
+    return f"{s}%" if s else ""
+
+
 def _open_worksheet(credential_path):
     """Return the target gspread Worksheet, creating it (with headers) if absent."""
     import gspread
@@ -157,19 +173,36 @@ def _open_worksheet(credential_path):
         ws = book.worksheet(SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         ws = book.add_worksheet(title=SHEET_NAME, rows=2000, cols=len(HEADERS))
-        ws.append_row(HEADERS, value_input_option="USER_ENTERED")
+        ws.update([HEADERS], value_input_option="RAW")
         print(f"  created sheet '{SHEET_NAME}' with headers", file=sys.stderr)
     return ws
 
 
-def get_existing_keys(ws):
-    """Return {(year_str, month_str)} for rows already in the sheet."""
+def _migrate_if_needed(ws):
+    """Migrate old 5-column (Year, Month, Revenue, MoM%, YoY%) format in-place."""
     all_rows = ws.get_all_values()
-    return {
-        (r[0], r[1])
-        for r in all_rows[1:]          # skip header
-        if len(r) >= 2 and r[0] and r[1]
-    }
+    if not all_rows or all_rows[0][:2] != OLD_HEADERS_PREFIX:
+        return  # already new format or empty
+    print("  migrating to new format (Year+Month → Date, adding commas/%) ...",
+          file=sys.stderr)
+    new_rows = []
+    for r in all_rows[1:]:
+        if not r[0] or not r[1]:
+            continue
+        date = f"{r[0]}-{int(r[1]):02d}"
+        revenue = _fmt_revenue(r[2]) if len(r) > 2 else ""
+        mom = _fmt_pct(r[3]) if len(r) > 3 else ""
+        yoy = _fmt_pct(r[4]) if len(r) > 4 else ""
+        new_rows.append([date, revenue, mom, yoy])
+    ws.clear()
+    ws.update([HEADERS] + new_rows, value_input_option="RAW")
+    print(f"  migrated {len(new_rows)} row(s)", file=sys.stderr)
+
+
+def get_existing_keys(ws):
+    """Return {date_str} for rows already in the sheet (e.g. '2026-04')."""
+    all_rows = ws.get_all_values()
+    return {r[0] for r in all_rows[1:] if r and r[0]}
 
 
 # --------------------------------------------------------------------------- #
@@ -198,6 +231,7 @@ def main():
 
     print(f"Opening sheet '{SHEET_NAME}' ...", file=sys.stderr)
     ws = _open_worksheet(args.credential)
+    _migrate_if_needed(ws)
     existing = get_existing_keys(ws)
     print(f"  {len(existing)} existing row(s)", file=sys.stderr)
 
@@ -234,11 +268,14 @@ def main():
                 print("no table (JS?)", file=sys.stderr)
             continue
 
-        # Prepend year and filter already-present (year, month) pairs.
-        full_rows = [[str(year), str(m), *rest] for m, *rest in raw_rows]
-        new_rows = [r for r in full_rows if (r[0], r[1]) not in existing]
+        # Build formatted rows and filter already-present dates.
+        full_rows = [
+            [f"{year}-{m:02d}", _fmt_revenue(rev), _fmt_pct(mom), _fmt_pct(yoy)]
+            for m, rev, mom, yoy in raw_rows
+        ]
+        new_rows = [r for r in full_rows if r[0] not in existing]
         for r in new_rows:
-            existing.add((r[0], r[1]))
+            existing.add(r[0])
         all_new_rows.extend(new_rows)
         print(f"{len(new_rows)} new row(s)", file=sys.stderr)
 
@@ -248,7 +285,7 @@ def main():
         # Sheet is reverse-chronological; insert newest rows at the top (row 2,
         # just below the header) so they appear first.
         all_new_rows.sort(key=lambda r: (int(r[0]), int(r[1])), reverse=True)
-        ws.insert_rows(all_new_rows, row=2, value_input_option="USER_ENTERED")
+        ws.insert_rows(all_new_rows, row=2, value_input_option="RAW")
 
     print(f"\nDone: {len(all_new_rows)} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
 
