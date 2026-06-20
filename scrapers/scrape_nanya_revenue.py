@@ -207,7 +207,7 @@ def main():
         session.headers.update(_REQUEST_HEADERS)
 
     js_warning_shown = False
-    total_added = 0
+    all_new_rows = []
 
     for year in years:
         print(f"  {year} ...", file=sys.stderr, end=" ")
@@ -234,22 +234,23 @@ def main():
                 print("no table (JS?)", file=sys.stderr)
             continue
 
-        # Prepend year to each row and filter already-present (year, month) pairs.
+        # Prepend year and filter already-present (year, month) pairs.
         full_rows = [[str(year), str(m), *rest] for m, *rest in raw_rows]
         new_rows = [r for r in full_rows if (r[0], r[1]) not in existing]
-
-        if new_rows:
-            ws.append_rows(new_rows, value_input_option="USER_ENTERED")
-            for r in new_rows:
-                existing.add((r[0], r[1]))
-            total_added += len(new_rows)
-            print(f"appended {len(new_rows)} row(s)", file=sys.stderr)
-        else:
-            print("no new rows", file=sys.stderr)
+        for r in new_rows:
+            existing.add((r[0], r[1]))
+        all_new_rows.extend(new_rows)
+        print(f"{len(new_rows)} new row(s)", file=sys.stderr)
 
         time.sleep(args.delay)
 
-    print(f"\nDone: {total_added} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
+    if all_new_rows:
+        # Sheet is reverse-chronological; insert newest rows at the top (row 2,
+        # just below the header) so they appear first.
+        all_new_rows.sort(key=lambda r: (int(r[0]), int(r[1])), reverse=True)
+        ws.insert_rows(all_new_rows, row=2, value_input_option="USER_ENTERED")
+
+    print(f"\nDone: {len(all_new_rows)} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
 
 
 if __name__ == "__main__":
