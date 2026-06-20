@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir \
     python-dateutil \
     gspread \
     oauth2client \
-    requests
+    requests \
+    beautifulsoup4
 
 # Headless-browser scraper (scrapers/scrape_urls.py). Installs Playwright and
 # Chromium with its system dependencies.
@@ -60,6 +61,13 @@ RUN echo '15 6 * * * root HOME=/root /usr/local/bin/aws s3 sync /var/www/smart-s
 # Credentials are NOT baked into the image; run-tony-stock.sh bind-mounts them
 # read-only at runtime (~/.smart-stocker-google-api.json, ~/.yahoo-finance.api-key.txt,
 # ~/.aws) so secrets never end up in an image layer.
+
+# Daily (16:00 UTC = midnight Taiwan time, UTC+8): append new Nanya monthly
+# revenue rows to the "Nanya monthly revenue" sheet. Scrapes only the current
+# year so each run is fast; idempotent (skips already-present rows).
+RUN echo '0 16 * * * root /usr/local/bin/python3 /opt/scrapers/scrape_nanya_revenue.py --year $(date +\%Y) >> /var/log/nanya-revenue.log 2>&1' \
+    > /etc/cron.d/nanya-revenue \
+    && chmod 0644 /etc/cron.d/nanya-revenue
 
 COPY entrypoint-tony-stock.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

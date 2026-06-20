@@ -145,13 +145,13 @@ def fetch_year_playwright(year):
 def _open_worksheet(credential_path):
     """Return the target gspread Worksheet, creating it (with headers) if absent."""
     import gspread
-    from oauth2client.service_account import ServiceAccountCredentials
+    from google.oauth2.service_account import Credentials
 
-    scope = [
+    scopes = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(credential_path, scope)
+    creds = Credentials.from_service_account_file(credential_path, scopes=scopes)
     book = gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
     try:
         ws = book.worksheet(SHEET_NAME)
