@@ -220,23 +220,18 @@ def merge(existing_data, new_rows_tokens):
 
 
 def order_columns(prior_order, merged):
-    """Stable model-column order: keep prior order, append newly-seen models.
+    """Order model columns by usage in the most recent week (descending).
 
-    New models are appended in order of first appearance scanning weeks
-    oldest -> newest.
+    Missing values count as 0; ties (incl. models absent from the latest week)
+    break alphabetically. prior_order is unused — column order is recomputed
+    each run so it always reflects current popularity.
     """
-    order = [c for c in prior_order]
-    seen = set(order)
-    for date in sorted(merged):  # oldest first
-        for col in merged[date]:
-            if col == OTHERS:
-                continue
-            if col not in seen:
-                seen.add(col)
-                order.append(col)
-    if OTHERS in {c for cols in merged.values() for c in cols} and OTHERS not in seen:
-        order.append(OTHERS)
-    return order
+    if not merged:
+        return []
+    latest = max(merged)
+    cols = {c for week in merged.values() for c in week}
+    latest_week = merged[latest]
+    return sorted(cols, key=lambda c: (-latest_week.get(c, 0.0), c))
 
 
 def build_sheet_matrix(merged, model_order):
