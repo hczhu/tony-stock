@@ -69,6 +69,13 @@ RUN echo '0 16 * * * root /usr/local/bin/python3 /opt/scrapers/scrape_nanya_reve
     > /etc/cron.d/nanya-revenue \
     && chmod 0644 /etc/cron.d/nanya-revenue
 
+# Daily (05:00 UTC): refresh the OpenRouter top-model weekly-usage sheet. Keeps
+# the current week's pace projection fresh and finalizes completed weeks. The
+# script fetches everything it needs (no args) and is idempotent.
+RUN echo '0 5 * * * root HOME=/root /usr/local/bin/python3 /opt/scrapers/scrape_openrouter_usage.py >> /var/log/openrouter-usage.log 2>&1' \
+    > /etc/cron.d/openrouter-usage \
+    && chmod 0644 /etc/cron.d/openrouter-usage
+
 COPY entrypoint-tony-stock.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
