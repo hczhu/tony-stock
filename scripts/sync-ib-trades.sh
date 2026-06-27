@@ -11,6 +11,11 @@ PROMPT_FILE="$HERE/sync-ib-trades.prompt.md"
 LOG="$HOME/.cron-logs/sync-ib-trades.log"
 mkdir -p "$(dirname "$LOG")"
 
+# Keep the log bounded: rotate when it exceeds ~1 MB, keeping one previous file.
+if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+  mv -f "$LOG" "$LOG.1"
+fi
+
 cd "$HOME/tony-stock" || { echo "cannot cd to repo" >>"$LOG"; exit 1; }
 
 {
