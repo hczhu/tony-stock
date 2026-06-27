@@ -3,6 +3,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     nginx \
     cron \
+    logrotate \
     git \
     curl \
     unzip \
@@ -78,6 +79,14 @@ RUN echo '0 16 * * * root /usr/local/bin/python3 /opt/tony-stock/scrapers/scrape
 RUN echo '0 5 * * * root HOME=/root /usr/local/bin/python3 /opt/tony-stock/scrapers/scrape_openrouter_usage.py >> /var/log/openrouter-usage.log 2>&1' \
     > /etc/cron.d/openrouter-usage \
     && chmod 0644 /etc/cron.d/openrouter-usage
+
+# Daily (07:30 UTC): rotate the cron logs so they don't grow unbounded
+# (smart-stocker.log in particular grows every 15 min). copytruncate keeps the
+# same inode so the append-mode cron jobs keep writing without a restart.
+COPY --chmod=0644 tony-stock-logrotate.conf /etc/logrotate.d/tony-stock-logs
+RUN echo '30 7 * * * root /usr/sbin/logrotate --state /var/lib/logrotate/tony-stock.status /etc/logrotate.d/tony-stock-logs >> /var/log/logrotate.log 2>&1' \
+    > /etc/cron.d/logrotate \
+    && chmod 0644 /etc/cron.d/logrotate
 
 COPY entrypoint-tony-stock.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
