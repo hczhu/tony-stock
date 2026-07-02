@@ -2,11 +2,13 @@
 This repo helps my stock investing process. It heavily depends on AI agents, Codex and Claude.
 
 ## Set up
-- git clone the 3 repos below under the root directory of tony-stock repo.
+- Run `bash init.sh` to clone (or pull) the sub-repos below under the root directory of the tony-stock repo. They are gitignored (not submodules).
   ```
-  git@github.com:hczhu/smart-stock.git
-  git@github.com:hczhu/Logseq-files.git
-  https://github.com/hczhu/code_recipes
+  git@github.com:hczhu/smart-stock.git      -> smart-stock/
+  git@github.com:hczhu/Logseq-files.git     -> Logseq-files/
+  https://github.com/hczhu/code_recipes     -> code_recipes/
+  git@github.com:hczhu/stock-research.git   -> stock-research/
+  git@github.com:hczhu/learning-notes.git   -> learning-notes/
   ```
 - Install gws cli skills for the user (not only for the project) from https://github.com/googleworkspace/cli/tree/main/skills
 - Ask me to auth into gws
