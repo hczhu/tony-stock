@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workflow rules
 
-- Never push commits directly to `main` or `master` on **any repo** in this project (tony-stock, smart-stock, Logseq-files, code_recipes, stock-research). Always create a branch, open a PR, and merge the PR.
+- Never push commits directly to `main` or `master` on **any repo** in this project (tony-stock, smart-stock, Logseq-files, code_recipes, stock-research, learning-notes). Always create a branch, open a PR, and merge the PR.
 - For code changes, make a plan and get confirmation before implementing. Non-code changes (docs, config) can proceed without confirmation.
 
 ## Repo structure
@@ -15,6 +15,7 @@ This repo orchestrates a stock investing dashboard. Key sub-repos cloned under t
 - `code_recipes/` — shared utilities and dotfiles
 - `Logseq-files/` — personal notes and trading logs
 - `stock-research/` — all stock memo files (moved from Logseq-files/pages/stock-memos/)
+- `learning-notes/` — personal technical learning notes (AI/ML, inference, semiconductors, tools) in Logseq md format
 
 ## Docker image: tony-stock
 
