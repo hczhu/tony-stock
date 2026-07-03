@@ -284,7 +284,7 @@ def main():
     if all_new_rows:
         # Sheet is reverse-chronological; insert newest rows at the top (row 2,
         # just below the header) so they appear first.
-        all_new_rows.sort(key=lambda r: (int(r[0]), int(r[1])), reverse=True)
+        all_new_rows.sort(key=lambda r: r[0], reverse=True)
         ws.insert_rows(all_new_rows, row=2, value_input_option="RAW")
 
     print(f"\nDone: {len(all_new_rows)} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
