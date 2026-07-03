@@ -213,64 +213,47 @@ def get_existing_keys(ws):
     return {r[0] for r in all_rows[1:] if r and r[0]}
 
 
-def _to_int(raw):
-    """'$25,491,201' / '27,669,563' → int, or None if not numeric."""
-    s = re.sub(r"[^\d-]", "", str(raw))
-    try:
-        return int(s)
-    except ValueError:
-        return None
-
-
 def recompute_derived(ws):
-    """Recompute the Rolling-3M-Revenue and 3M-Growth-% columns (E, F).
+    """(Re)write the Rolling-3M-Revenue and 3M-Growth-% columns (E, F) as live
+    Google Sheets formulas that reference the Revenue column (B).
 
-    For each month M (rows are whatever order the sheet is in):
-      Rolling 3M Revenue = Revenue(M) + Revenue(M-1) + Revenue(M-2)
-      3M Growth %        = (Rolling(M) - Rolling(M-3)) / Rolling(M-3) * 100
+    Rows are reverse-chronological (newest at row 2), so for the month on row r,
+    the two preceding months are rows r+1 and r+2:
+      Rolling 3M Revenue = Revenue(r) + Revenue(r+1) + Revenue(r+2)
+      3M Growth %        = (Rolling(r) - Rolling(r+3)) / Rolling(r+3)
                            i.e. vs the previous, non-overlapping 3-month block.
 
-    Blank when the trailing window (or the prior window) isn't fully populated.
-    Writes E1:F<n> in the sheet's existing row order, so it works regardless of
-    whether rows are stored oldest- or newest-first.
+    Revenue is stored as text (with '$' / commas), so each cell is cleaned with
+    REGEXREPLACE+VALUE inside the formula. Cells resolve to "" until their
+    trailing (3mo) / prior (6mo) window is fully populated. Formulas are
+    rewritten for the current row layout on every run, so they stay correct
+    after new rows are inserted at the top.
     """
     all_rows = ws.get_all_values()
-    if not all_rows:
+    n = len(all_rows)
+    if n <= 1:
         return
 
-    # Map date -> revenue for the whole sheet, then walk months chronologically.
-    rev_by_date = {}
-    for r in all_rows[1:]:
-        if r and r[0]:
-            v = _to_int(r[1]) if len(r) > 1 else None
-            if v is not None:
-                rev_by_date[r[0]] = v
+    def _clean(cell):  # text like "$25,491,201" -> numeric value
+        return f'VALUE(REGEXREPLACE(TO_TEXT({cell}),"[^0-9.-]",""))'
 
-    dates_sorted = sorted(rev_by_date)  # 'YYYY-MM' sorts chronologically
-    idx = {d: i for i, d in enumerate(dates_sorted)}
-
-    rolling = {}
-    for i, d in enumerate(dates_sorted):
-        if i >= 2:
-            rolling[d] = sum(rev_by_date[dates_sorted[j]] for j in (i, i - 1, i - 2))
-
-    growth = {}
-    for i, d in enumerate(dates_sorted):
-        if d in rolling and i >= 3:
-            prev_d = dates_sorted[i - 3]
-            if prev_d in rolling and rolling[prev_d]:
-                growth[d] = (rolling[d] - rolling[prev_d]) / rolling[prev_d] * 100.0
-
-    # Build E:F in the sheet's existing row order.
     out = [DERIVED_HEADERS]
-    for r in all_rows[1:]:
-        d = r[0] if r else ""
-        roll = f"{rolling[d]:,}" if d in rolling else ""
-        grw = f"{growth[d]:.1f}%" if d in growth else ""
-        out.append([roll, grw])
+    for r in range(2, n + 1):  # data rows 2..n
+        rolling = (
+            f'=IF(OR(B{r}="",B{r+1}="",B{r+2}=""),"",'
+            f'{_clean(f"B{r}")}+{_clean(f"B{r+1}")}+{_clean(f"B{r+2}")})'
+        )
+        growth = (
+            f'=IF(OR(E{r}="",E{r+3}="",N(E{r+3})=0),"",'
+            f'(E{r}-E{r+3})/E{r+3})'
+        )
+        out.append([rolling, growth])
 
-    ws.update(out, range_name=f"E1:F{len(out)}", value_input_option="RAW")
-    print(f"  recomputed derived columns for {len(rolling)} month(s)", file=sys.stderr)
+    ws.update(out, range_name=f"E1:F{n}", value_input_option="USER_ENTERED")
+    # Display formats: thousands for the rolling sum, percent for the growth.
+    ws.format(f"E2:E{n}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}})
+    ws.format(f"F2:F{n}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
+    print(f"  wrote derived-column formulas for {n - 1} row(s)", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
