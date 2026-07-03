@@ -4,11 +4,17 @@
 Source:  https://www.nanya.com/en/IR/36/Monthly%20Revenue?Year=YYYY  (one page per year)
 Target:  "Nanya monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY
 
-Sheet columns: Date | Revenue | MoM% | YoY%
-  Date    — "YYYY-MM" string (e.g. "2026-04")
-  Revenue — comma-formatted integer string (e.g. "25,491,201")
-  MoM%    — percentage string with sign and suffix (e.g. "40.3%", "-3.1%")
-  YoY%    — same
+Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3M Revenue | 3M Growth %
+  Date               — "YYYY-MM" string (e.g. "2026-04")
+  Revenue            — comma-formatted integer string (e.g. "25,491,201")
+  MoM%               — percentage string with sign and suffix (e.g. "40.3%", "-3.1%")
+  YoY%               — same
+  Rolling 3M Revenue — trailing 3-month revenue sum, rev(M)+rev(M-1)+rev(M-2)
+  3M Growth %        — growth of the rolling 3M vs the previous, non-overlapping
+                       3-month block: (rolling(M)-rolling(M-3))/rolling(M-3)*100
+
+The last two columns (E, F) are derived from Revenue and recomputed on every
+run, so they self-heal and stay in sync regardless of row order.
 
 Idempotent: reads existing Date values from the sheet on start-up and only
 inserts rows whose Date is not already present. Safe to re-run at any time.
@@ -41,6 +47,8 @@ CREDENTIAL_PATH = os.environ.get(
 )
 FIRST_YEAR = 2013
 HEADERS = ["Date", "Revenue", "MoM%", "YoY%"]
+# Derived columns (E, F) recomputed from Revenue on every run.
+DERIVED_HEADERS = ["Rolling 3M Revenue", "3M Growth %"]
 OLD_HEADERS_PREFIX = ["Year", "Month"]  # detect pre-migration format
 
 MONTHS = [
@@ -205,6 +213,66 @@ def get_existing_keys(ws):
     return {r[0] for r in all_rows[1:] if r and r[0]}
 
 
+def _to_int(raw):
+    """'$25,491,201' / '27,669,563' → int, or None if not numeric."""
+    s = re.sub(r"[^\d-]", "", str(raw))
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+def recompute_derived(ws):
+    """Recompute the Rolling-3M-Revenue and 3M-Growth-% columns (E, F).
+
+    For each month M (rows are whatever order the sheet is in):
+      Rolling 3M Revenue = Revenue(M) + Revenue(M-1) + Revenue(M-2)
+      3M Growth %        = (Rolling(M) - Rolling(M-3)) / Rolling(M-3) * 100
+                           i.e. vs the previous, non-overlapping 3-month block.
+
+    Blank when the trailing window (or the prior window) isn't fully populated.
+    Writes E1:F<n> in the sheet's existing row order, so it works regardless of
+    whether rows are stored oldest- or newest-first.
+    """
+    all_rows = ws.get_all_values()
+    if not all_rows:
+        return
+
+    # Map date -> revenue for the whole sheet, then walk months chronologically.
+    rev_by_date = {}
+    for r in all_rows[1:]:
+        if r and r[0]:
+            v = _to_int(r[1]) if len(r) > 1 else None
+            if v is not None:
+                rev_by_date[r[0]] = v
+
+    dates_sorted = sorted(rev_by_date)  # 'YYYY-MM' sorts chronologically
+    idx = {d: i for i, d in enumerate(dates_sorted)}
+
+    rolling = {}
+    for i, d in enumerate(dates_sorted):
+        if i >= 2:
+            rolling[d] = sum(rev_by_date[dates_sorted[j]] for j in (i, i - 1, i - 2))
+
+    growth = {}
+    for i, d in enumerate(dates_sorted):
+        if d in rolling and i >= 3:
+            prev_d = dates_sorted[i - 3]
+            if prev_d in rolling and rolling[prev_d]:
+                growth[d] = (rolling[d] - rolling[prev_d]) / rolling[prev_d] * 100.0
+
+    # Build E:F in the sheet's existing row order.
+    out = [DERIVED_HEADERS]
+    for r in all_rows[1:]:
+        d = r[0] if r else ""
+        roll = f"{rolling[d]:,}" if d in rolling else ""
+        grw = f"{growth[d]:.1f}%" if d in growth else ""
+        out.append([roll, grw])
+
+    ws.update(out, range_name=f"E1:F{len(out)}", value_input_option="RAW")
+    print(f"  recomputed derived columns for {len(rolling)} month(s)", file=sys.stderr)
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -286,6 +354,10 @@ def main():
         # just below the header) so they appear first.
         all_new_rows.sort(key=lambda r: r[0], reverse=True)
         ws.insert_rows(all_new_rows, row=2, value_input_option="RAW")
+
+    # Always refresh the derived Rolling-3M / 3M-Growth columns (E, F) so they
+    # stay in sync with the Revenue column, even on a no-new-rows run.
+    recompute_derived(ws)
 
     print(f"\nDone: {len(all_new_rows)} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
 
