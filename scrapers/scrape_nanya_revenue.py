@@ -27,10 +27,20 @@ Automatically migrates the old 5-column (Year, Month, …) format to this
 
 If the page requires JavaScript rendering (table not found with plain HTTP),
 re-run inside the tony-stock container using the --playwright flag.
+
+Two sources:
+  * /36 Monthly Revenue (plain HTTP): authoritative — precise revenue (NT$
+    thousands) + MoM% + YoY%. Backfills and refines.
+  * /15 Press Releases (non-headless Chromium; the list is JS-rendered and
+    headless is blocked): announces each month's revenue promptly, before /36
+    updates. Used only to add the latest month(s) early (revenue from the title,
+    NT$ millions → thousands; MoM%/YoY% blank). /36 later refines those rows.
+    Skip with --no-pr.
 """
 import argparse
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -41,6 +51,15 @@ from bs4 import BeautifulSoup
 SPREADSHEET_ID = "16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY"
 SHEET_NAME = "Nanya monthly revenue"
 BASE_URL = "https://www.nanya.com/en/IR/36/Monthly%20Revenue"
+# Press Releases page announces each month's revenue promptly (before the /36
+# Monthly Revenue table updates). Used as a supplement to add the latest month
+# early; /36 later refines it with precise figures + MoM%/YoY%.
+PR_URL = "https://www.nanya.com/en/IR/15/Press%20Releases"
+# e.g. "Nanya Technology June 2026 Revenue NT$ 29,388 Million" (NT$ millions).
+PR_TITLE_RE = re.compile(
+    r"Nanya Technology\s+([A-Za-z]+)\s+(\d{4})\s+Revenue\s+NT\$?\s*([\d,]+)\s*Million",
+    re.I,
+)
 CREDENTIAL_PATH = os.environ.get(
     "SMART_STOCKER_CREDENTIAL",
     os.path.expanduser("~/.smart-stocker-google-api.json"),
@@ -146,6 +165,66 @@ def fetch_year_playwright(year):
         ctx.close()
         browser.close()
     return _parse_table(html)
+
+
+def _ensure_display():
+    """Re-exec under xvfb-run if there is no X display. The Press Releases page
+    blocks headless Chromium, so we render it with a *non-headless* browser,
+    which needs a display."""
+    if os.environ.get("DISPLAY"):
+        return
+    xvfb = shutil.which("xvfb-run") or "/usr/bin/xvfb-run"
+    if os.path.exists(xvfb):
+        os.execv(xvfb, [xvfb, "-a", "--server-args=-screen 0 1280x1400x24",
+                        sys.executable, *sys.argv])
+
+
+def fetch_press_release_revenue(year):
+    """Render the /15 Press Releases page for *year* (non-headless Chromium; the
+    list is JS-rendered and headless is blocked) and return
+    {"YYYY-MM": revenue_thousands_int} parsed from revenue-announcement titles
+    like "Nanya Technology June 2026 Revenue NT$ 29,388 Million".
+
+    The title reports NT$ millions; we scale to NT$ thousands to match the sheet
+    (and the /36 Monthly Revenue figures). The revenue month is taken from the
+    title, not the publish date (so a December release published in January is
+    keyed correctly)."""
+    from playwright.sync_api import sync_playwright
+
+    out = {}
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False, channel="chromium",
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        ctx = browser.new_context(
+            locale="en-US", user_agent=_REQUEST_HEADERS["User-Agent"],
+            viewport={"width": 1280, "height": 1400},
+        )
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+            "window.chrome={runtime:{}};"
+        )
+        page = ctx.new_page()
+        page.goto(f"{PR_URL}?Year={year}", wait_until="domcontentloaded",
+                  timeout=60000)
+        for _ in range(20):  # wait out the JS render of the list
+            page.wait_for_timeout(1500)
+            if re.search(r"Revenue\s+NT", page.content(), re.I):
+                break
+        for a in page.query_selector_all("a"):
+            m = PR_TITLE_RE.search((a.inner_text() or "").replace("\n", " "))
+            if not m:
+                continue
+            month = MONTH_NUM.get(m.group(1).capitalize())
+            if not month:
+                continue
+            out[f"{int(m.group(2))}-{month:02d}"] = int(
+                m.group(3).replace(",", "")) * 1000
+        ctx.close()
+        browser.close()
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -276,14 +355,25 @@ def main():
                     help="use headless Chromium instead of plain HTTP (for JS-rendered pages)")
     ap.add_argument("--delay", type=float, default=1.5,
                     help="seconds between year requests (default: 1.5)")
+    ap.add_argument("--no-pr", action="store_true",
+                    help="skip the Press Releases (/15) supplement for the latest month")
     args = ap.parse_args()
+
+    if not args.no_pr:
+        _ensure_display()  # may re-exec under xvfb-run and not return
 
     years = [args.year] if args.year else list(range(args.start, args.end + 1))
 
     print(f"Opening sheet '{SHEET_NAME}' ...", file=sys.stderr)
     ws = _open_worksheet(args.credential)
     _migrate_if_needed(ws)
-    existing = get_existing_keys(ws)
+    all_rows = ws.get_all_values()
+    existing = {r[0] for r in all_rows[1:] if r and r[0]}
+    # Rows whose MoM% (col C) is blank are candidates for /36 refinement — i.e.
+    # /15-sourced supplement rows waiting for the precise Monthly Revenue figures.
+    # Map date -> 1-based sheet row number.
+    blank_mom = {r[0]: i + 1 for i, r in enumerate(all_rows)
+                 if i >= 1 and r and r[0] and (len(r) < 3 or not str(r[2]).strip())}
     print(f"  {len(existing)} existing row(s)", file=sys.stderr)
 
     session = None
@@ -293,6 +383,8 @@ def main():
 
     js_warning_shown = False
     all_new_rows = []
+    authoritative = set()   # months the /36 table has this run
+    refines = []            # (sheet_row, [date, rev, mom, yoy]) to overwrite
 
     for year in years:
         print(f"  {year} ...", file=sys.stderr, end=" ")
@@ -319,18 +411,50 @@ def main():
                 print("no table (JS?)", file=sys.stderr)
             continue
 
-        # Build formatted rows and filter already-present dates.
-        full_rows = [
-            [f"{year}-{m:02d}", _fmt_revenue(rev), _fmt_pct(mom), _fmt_pct(yoy)]
-            for m, rev, mom, yoy in raw_rows
-        ]
-        new_rows = [r for r in full_rows if r[0] not in existing]
-        for r in new_rows:
-            existing.add(r[0])
-        all_new_rows.extend(new_rows)
-        print(f"{len(new_rows)} new row(s)", file=sys.stderr)
+        # Build formatted rows; the /36 table is authoritative (precise revenue
+        # + MoM%/YoY%). Insert genuinely-new months; refine any existing rows
+        # that lack MoM% (i.e. earlier /15 supplements) with the precise data.
+        new_here = 0
+        for m, rev, mom, yoy in raw_rows:
+            date = f"{year}-{m:02d}"
+            row = [date, _fmt_revenue(rev), _fmt_pct(mom), _fmt_pct(yoy)]
+            authoritative.add(date)
+            if date not in existing:
+                all_new_rows.append(row)
+                existing.add(date)
+                new_here += 1
+            elif date in blank_mom and row[2]:
+                refines.append((blank_mom.pop(date), row))
+        print(f"{new_here} new row(s)", file=sys.stderr)
 
         time.sleep(args.delay)
+
+    # Supplement: pull the latest month(s) from the Press Releases page and add
+    # any not yet present (and not covered by /36 this run). Revenue only —
+    # MoM%/YoY% stay blank until /36 publishes and refines the row.
+    if not args.no_pr:
+        pr_year = args.year or args.end
+        print(f"  press releases {pr_year} ...", file=sys.stderr, end=" ")
+        sys.stderr.flush()
+        try:
+            pr = fetch_press_release_revenue(pr_year)
+            added = 0
+            for date, rev in sorted(pr.items()):
+                if date not in existing and date not in authoritative:
+                    all_new_rows.append([date, _fmt_revenue(rev), "", ""])
+                    existing.add(date)
+                    added += 1
+            print(f"{len(pr)} found, {added} supplemented", file=sys.stderr)
+        except Exception as exc:
+            print(f"FAIL: {exc}", file=sys.stderr)
+
+    # Refine existing rows first (in place), before inserts shift row numbers.
+    for sheet_row, row in refines:
+        ws.update([row], range_name=f"A{sheet_row}:D{sheet_row}",
+                  value_input_option="RAW")
+    if refines:
+        print(f"  refined {len(refines)} supplement row(s) with /36 data",
+              file=sys.stderr)
 
     if all_new_rows:
         # Sheet is reverse-chronological; insert newest rows at the top (row 2,
