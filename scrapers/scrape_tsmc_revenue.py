@@ -4,10 +4,17 @@
 Source:  https://investor.tsmc.com/english/monthly-revenue/YYYY  (one page per year)
 Target:  "TSMC monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY
 
-Sheet columns: Date | Revenue | YoY%
-  Date    — "YYYY-MM" string (e.g. "2026-04")
-  Revenue — comma-formatted integer string, as reported (in NT$ millions)
-  YoY%    — percentage string with sign and suffix (e.g. "36.8%", "-29.4%")
+Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3 Month Revenue | Sequential Growth %
+  Date                — "YYYY-MM" string (e.g. "2026-04")
+  Revenue             — comma-formatted integer string, as reported (NT$ millions)
+  YoY%                — percentage string with sign and suffix (from the page)
+  MoM%                — derived: Rev(M)/Rev(M-1) - 1
+  Rolling 3 Month Rev — derived: Rev(M) + Rev(M-1) + Rev(M-2)
+  Sequential Growth % — derived: Rolling(M)/Rolling(M-3) - 1
+
+The scraper only pulls Date/Revenue/YoY% from the page (TSMC reports YoY only);
+the MoM%, Rolling and Sequential columns are written as live Sheets formulas
+(recompute_derived), located by header name, and refreshed on every run.
 
 The TSMC investor site sits behind a Cloudflare "Just a moment…" JavaScript
 challenge, so a plain HTTP request is blocked. This scraper drives a real
@@ -158,7 +165,7 @@ def locate_columns(ws):
                 return i
         return default
 
-    idx_date = find(lambda h: h.startswith("date"), 0)
+    idx_date = find(lambda h: h.startswith("date") or h.startswith("month"), 0)
     idx_rev = find(lambda h: h.startswith("revenue"), 1)
     idx_yoy = find(lambda h: h.replace(" ", "").startswith("yoy"), 2)
     return max(len(header), idx_yoy + 1), idx_date, idx_rev, idx_yoy
@@ -168,6 +175,87 @@ def get_existing_keys(ws, idx_date):
     """Return {date_str} for rows already in the sheet (e.g. '2026-04')."""
     all_rows = ws.get_all_values()
     return {r[idx_date] for r in all_rows[1:] if len(r) > idx_date and r[idx_date]}
+
+
+def _col_letter(idx0):
+    """0-based column index → A1 letter (0→'A', 2→'C', 4→'E')."""
+    s, n = "", idx0
+    while True:
+        s = chr(ord("A") + n % 26) + s
+        n = n // 26 - 1
+        if n < 0:
+            return s
+
+
+def recompute_derived(ws):
+    """(Re)write the MoM%, Rolling 3 Month Revenue and Sequential Growth %
+    columns as live formulas referencing the Revenue column.
+
+    TSMC's page reports YoY only, so all three of these are derived here. Rows
+    are reverse-chronological (newest at row 2), so for the month on row r the
+    preceding months are rows r+1, r+2, … :
+      MoM%                 = Rev(r) / Rev(r+1) - 1
+      Rolling 3 Month Rev  = Rev(r) + Rev(r+1) + Rev(r+2)
+      Sequential Growth %  = Rolling(r) / Rolling(r+3) - 1   (vs prior 3-mo block)
+
+    Revenue is stored as text (commas), so each reference is cleaned inline with
+    REGEXREPLACE+VALUE. Formulas resolve to "" until their window is populated,
+    and are rewritten for the current row layout each run so they survive
+    top-of-sheet inserts. Columns are located by header name.
+    """
+    header = ws.row_values(1)
+    n = len(ws.get_all_values())
+    if n <= 1 or not header:
+        return
+
+    def find(pred):
+        for i, h in enumerate(header):
+            if pred(str(h).replace("\n", " ").strip().lower()):
+                return i
+        return None
+
+    i_rev = find(lambda h: h.startswith("revenue"))
+    i_mom = find(lambda h: h.replace(" ", "").startswith("mom"))
+    i_roll = find(lambda h: "rolling" in h)
+    i_seq = find(lambda h: h.startswith("sequential") or "growth" in h)
+    if i_rev is None:
+        print("  recompute: no Revenue column found; skipping", file=sys.stderr)
+        return
+
+    R = _col_letter(i_rev)
+    E = _col_letter(i_roll) if i_roll is not None else None
+
+    def clean(cell):  # text like "416,975" -> numeric value
+        return f'VALUE(REGEXREPLACE(TO_TEXT({cell}),"[^0-9.-]",""))'
+
+    updates, fmts = [], []
+    if i_mom is not None:
+        C = _col_letter(i_mom)
+        col = [[f'=IF(OR({R}{r}="",{R}{r+1}=""),"",'
+                f'{clean(f"{R}{r}")}/{clean(f"{R}{r+1}")}-1)'] for r in range(2, n + 1)]
+        updates.append((f"{C}2:{C}{n}", col))
+        fmts.append((f"{C}2:{C}{n}", "pct"))
+    if i_roll is not None:
+        col = [[f'=IF(OR({R}{r}="",{R}{r+1}="",{R}{r+2}=""),"",'
+                f'{clean(f"{R}{r}")}+{clean(f"{R}{r+1}")}+{clean(f"{R}{r+2}")})']
+               for r in range(2, n + 1)]
+        updates.append((f"{E}2:{E}{n}", col))
+        fmts.append((f"{E}2:{E}{n}", "num"))
+    if i_seq is not None and E is not None:
+        F = _col_letter(i_seq)
+        col = [[f'=IF(OR({E}{r}="",{E}{r+3}="",N({E}{r+3})=0),"",'
+                f'{E}{r}/{E}{r+3}-1)'] for r in range(2, n + 1)]
+        updates.append((f"{F}2:{F}{n}", col))
+        fmts.append((f"{F}2:{F}{n}", "pct"))
+
+    for rng, vals in updates:
+        ws.update(vals, range_name=rng, value_input_option="USER_ENTERED")
+    for rng, kind in fmts:
+        pat = ({"type": "PERCENT", "pattern": "0.0%"} if kind == "pct"
+               else {"type": "NUMBER", "pattern": "#,##0"})
+        ws.format(rng, {"numberFormat": pat})
+    print(f"  wrote MoM/Rolling/Sequential formulas for {n - 1} row(s)",
+          file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +347,10 @@ def main():
         # just below the header) so they appear first. 'YYYY-MM' sorts by date.
         all_new_rows.sort(key=lambda r: r[idx_date], reverse=True)
         ws.insert_rows(all_new_rows, row=2, value_input_option="RAW")
+
+    # Always refresh the derived formula columns (MoM% / Rolling / Sequential)
+    # so they stay in sync with Revenue, even on a no-new-rows run.
+    recompute_derived(ws)
 
     print(f"\nDone: {len(all_new_rows)} row(s) added to '{SHEET_NAME}'.", file=sys.stderr)
 
