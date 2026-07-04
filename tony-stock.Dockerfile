@@ -80,6 +80,15 @@ RUN echo '0 5 * * * root HOME=/root /usr/local/bin/python3 /opt/tony-stock/scrap
     > /etc/cron.d/openrouter-usage \
     && chmod 0644 /etc/cron.d/openrouter-usage
 
+# Daily (16:30 UTC = 00:30 Taiwan time): append new TSMC monthly revenue rows to
+# the "TSMC monthly revenue" sheet. The TSMC investor site is behind a Cloudflare
+# JS challenge, so the scraper drives a real (non-headless) Chromium; it
+# self-re-execs under xvfb-run when there is no X display. Scrapes only the
+# current year; idempotent (skips already-present rows).
+RUN echo '30 16 * * * root HOME=/root /usr/local/bin/python3 /opt/tony-stock/scrapers/scrape_tsmc_revenue.py --year $(date +\%Y) >> /var/log/tsmc-revenue.log 2>&1' \
+    > /etc/cron.d/tsmc-revenue \
+    && chmod 0644 /etc/cron.d/tsmc-revenue
+
 # Daily (07:30 UTC): rotate the cron logs so they don't grow unbounded
 # (smart-stocker.log in particular grows every 15 min). copytruncate keeps the
 # same inode so the append-mode cron jobs keep writing without a restart.
