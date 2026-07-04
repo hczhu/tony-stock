@@ -212,10 +212,26 @@ def scrape_one(context, url, out_dir, timeout_ms):
             dest.write_text(page.content(), encoding="utf-8")
             return dest, dest.stat().st_size, "challenge" if blocked else "html"
 
-        body = resp.body()
-        name = derive_name(
-            url, content_type=ctype, disposition=resp.headers.get("content-disposition")
-        )
+        # Binary content (PDF, xlsx, ...). Don't trust resp.body() here:
+        # Chromium's built-in PDF viewer hijacks the navigation, so for PDFs
+        # resp.body() returns the viewer's HTML wrapper, not the file bytes.
+        # Re-fetch through the context's HTTP client (shares cookies/UA) to get
+        # the true bytes; fall back to resp.body() only if that fails.
+        disposition = resp.headers.get("content-disposition")
+        body = None
+        try:
+            api = context.request.get(url, timeout=timeout_ms)
+            if api.ok:
+                api_ctype = (api.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if api_ctype:
+                    ctype = api_ctype
+                disposition = api.headers.get("content-disposition") or disposition
+                body = api.body()
+        except PWError:
+            body = None
+        if body is None:
+            body = resp.body()
+        name = derive_name(url, content_type=ctype, disposition=disposition)
         dest = unique_path(out_dir, name)
         dest.write_bytes(body)
         return dest, dest.stat().st_size, "file"
