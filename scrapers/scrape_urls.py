@@ -15,6 +15,14 @@ are installed (see tony-stock.Dockerfile).
 Usage:
     echo "https://example.com/file" | python3 scrape_urls.py -o /out
     python3 scrape_urls.py -o /out < urls.txt
+
+Regression test URLs (each must save a real PDF, header "%PDF", ~MBs, not
+a tiny HTML wrapper or an "Access Denied" page). Run after any change here:
+    # Akamai-fronted PDF: 403s the native headless UA -> needs DEFAULT_UA
+    https://investors.micron.com/static-files/2354ecda-77a0-4ddd-8462-a631eb491356
+    # arxiv PDF: Chromium's built-in PDF viewer hijacks the navigation, so
+    # resp.body() returns the viewer HTML -> needs the context.request refetch
+    https://arxiv.org/pdf/2607.01465
 """
 import argparse
 import mimetypes
@@ -212,10 +220,26 @@ def scrape_one(context, url, out_dir, timeout_ms):
             dest.write_text(page.content(), encoding="utf-8")
             return dest, dest.stat().st_size, "challenge" if blocked else "html"
 
-        body = resp.body()
-        name = derive_name(
-            url, content_type=ctype, disposition=resp.headers.get("content-disposition")
-        )
+        # Binary content (PDF, xlsx, ...). Don't trust resp.body() here:
+        # Chromium's built-in PDF viewer hijacks the navigation, so for PDFs
+        # resp.body() returns the viewer's HTML wrapper, not the file bytes.
+        # Re-fetch through the context's HTTP client (shares cookies/UA) to get
+        # the true bytes; fall back to resp.body() only if that fails.
+        disposition = resp.headers.get("content-disposition")
+        body = None
+        try:
+            api = context.request.get(url, timeout=timeout_ms)
+            if api.ok:
+                api_ctype = (api.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if api_ctype:
+                    ctype = api_ctype
+                disposition = api.headers.get("content-disposition") or disposition
+                body = api.body()
+        except PWError:
+            body = None
+        if body is None:
+            body = resp.body()
+        name = derive_name(url, content_type=ctype, disposition=disposition)
         dest = unique_path(out_dir, name)
         dest.write_bytes(body)
         return dest, dest.stat().st_size, "file"
@@ -228,7 +252,7 @@ def main():
     ap.add_argument("-o", "--output", default="scraped", help="output directory (default: ./scraped)")
     ap.add_argument("--timeout", type=float, default=60.0, help="per-URL timeout in seconds (default: 60)")
     ap.add_argument("--user-agent", default=None,
-                    help="override the browser User-Agent (default: the browser's native UA)")
+                    help="override the browser User-Agent (default: a realistic desktop Chrome UA)")
     args = ap.parse_args()
 
     out_dir = pathlib.Path(args.output)
@@ -254,6 +278,9 @@ def main():
         # Use the full Chromium build in new-headless mode (channel="chromium").
         # The default headless_shell advertises "HeadlessChrome" and is trivially
         # flagged by bot walls (Cloudflare etc.); also hide the automation flag.
+        # Even the full build's native UA still carries the "HeadlessChrome"
+        # token, which some edges (e.g. Akamai) 403 -- so we override it with a
+        # realistic desktop UA below (DEFAULT_UA).
         browser = p.chromium.launch(
             headless=True,
             channel="chromium",
@@ -271,8 +298,7 @@ def main():
             viewport={"width": 1280, "height": 900},
             extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
         )
-        if args.user_agent:
-            ctx_kwargs["user_agent"] = args.user_agent
+        ctx_kwargs["user_agent"] = args.user_agent or DEFAULT_UA
         context = browser.new_context(**ctx_kwargs)
         # Belt-and-suspenders: don't expose navigator.webdriver.
         context.add_init_script(
