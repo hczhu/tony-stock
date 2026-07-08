@@ -55,7 +55,7 @@ at runtime, so secrets never end up in an image layer:
 
 ## Stock trading spreadsheet
 
-Spreadsheet ID: `1oxtcfl2V4ff3eUMW4954IChpx9eFAoB83QMrZERPSgA`. One sheet per year (`txn.YYYY`), rows in reverse chronological order. When adding rows: copy `Name` and `Diversity` from prior rows with the same ticker; keep `Date` as a date type (not string). Use `gws sheets` commands to read/write via the Google Workspace CLI (`~/.local/bin/gws`).
+Spreadsheet ID: `1oxtcfl2V4ff3eUMW4954IChpx9eFAoB83QMrZERPSgA`. One sheet per year (`txn.YYYY`), rows in reverse chronological order. When adding rows: copy `Name` and `Diversity` from prior rows with the same ticker; keep `Date` as a date type (not string); the `Amount` (share quantity) must be a whole integer — round dollar-based/fractional fills to the nearest whole share (positive = buy, negative = sell). Record any trade fee (e.g. an ETF fee) in the `Commission` column. Use `gws sheets` commands to read/write via the Google Workspace CLI (`~/.local/bin/gws`).
 
 For **real-time stock prices**, read the `Prices` sheet of the same spreadsheet (columns: `Ticker`, `Price`, `Change`, `Marketcap $B`, `Name`, `Premium%`). It has live quotes — use it to value positions / compute unrealized P&L instead of the IBKR MCP or external price APIs.
 
