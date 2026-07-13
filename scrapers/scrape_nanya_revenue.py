@@ -6,8 +6,8 @@ Target:  "Nanya monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSu
 
 Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3M Revenue | 3M Growth %
   Date               — "YYYY-MM" string (e.g. "2026-04")
-  Revenue            — comma-formatted integer string (e.g. "25,491,201")
-  MoM%               — percentage string with sign and suffix (e.g. "40.3%", "-3.1%")
+  Revenue            — integer number (NT$ thousands), displayed with a #,##0 format
+  MoM%               — number (e.g. 0.403), displayed with a percent format
   YoY%               — same
   Rolling 3M Revenue — trailing 3-month revenue sum, rev(M)+rev(M-1)+rev(M-2)
   3M Growth %        — growth of the rolling 3M vs the previous, non-overlapping
@@ -232,17 +232,20 @@ def fetch_press_release_revenue(year):
 # --------------------------------------------------------------------------- #
 
 def _fmt_revenue(raw):
-    """'25491201' → '25,491,201'"""
+    """'25,491,201' → 25491201 (a real number, so Sheets stores it numerically)."""
     try:
-        return f"{int(str(raw).replace(',', '')):,}"
+        return int(str(raw).replace(",", ""))
     except (ValueError, TypeError):
         return str(raw)
 
 
 def _fmt_pct(raw):
-    """'40.3' or '40.3%' → '40.3%'; empty → ''"""
+    """'40.3' or '40.3%' → 0.403 (a real number; display via percent format)."""
     s = str(raw).strip().rstrip("%")
-    return f"{s}%" if s else ""
+    try:
+        return float(s) / 100
+    except ValueError:
+        return ""
 
 
 def _open_worksheet(credential_path):
@@ -302,11 +305,13 @@ def recompute_derived(ws):
       3M Growth %        = (Rolling(r) - Rolling(r+3)) / Rolling(r+3)
                            i.e. vs the previous, non-overlapping 3-month block.
 
-    Revenue is stored as text (with '$' / commas), so each cell is cleaned with
-    REGEXREPLACE+VALUE inside the formula. Cells resolve to "" until their
-    trailing (3mo) / prior (6mo) window is fully populated. Formulas are
-    rewritten for the current row layout on every run, so they stay correct
-    after new rows are inserted at the top.
+    Revenue cells are real numbers; each cell is still cleaned with
+    REGEXREPLACE+VALUE inside the formula as a defensive measure (handles any
+    legacy text cells). Cells resolve to "" until their trailing (3mo) / prior
+    (6mo) window is fully populated. Formulas are rewritten for the current row
+    layout on every run, so they stay correct after new rows are inserted at
+    the top. Also (re)applies number formats to the scraped Revenue / MoM% /
+    YoY% columns so inserted rows stay consistent.
     """
     all_rows = ws.get_all_values()
     n = len(all_rows)
@@ -329,7 +334,9 @@ def recompute_derived(ws):
         out.append([rolling, growth])
 
     ws.update(out, range_name=f"E1:F{n}", value_input_option="USER_ENTERED")
-    # Display formats: thousands for the rolling sum, percent for the growth.
+    # Display formats: thousands for revenue sums, percent for growth columns.
+    ws.format(f"B2:B{n}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}})
+    ws.format(f"C2:D{n}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
     ws.format(f"E2:E{n}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}})
     ws.format(f"F2:F{n}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
     print(f"  wrote derived-column formulas for {n - 1} row(s)", file=sys.stderr)

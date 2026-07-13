@@ -6,8 +6,8 @@ Target:  "TSMC monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuD
 
 Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3 Month Revenue | Sequential Growth %
   Date                — "YYYY-MM" string (e.g. "2026-04")
-  Revenue             — comma-formatted integer string, as reported (NT$ millions)
-  YoY%                — percentage string with sign and suffix (from the page)
+  Revenue             — integer number (NT$ millions), displayed with a #,##0 format
+  YoY%                — number (e.g. 0.368), displayed with a percent format
   MoM%                — derived: Rev(M)/Rev(M-1) - 1
   Rolling 3 Month Rev — derived: Rev(M) + Rev(M-1) + Rev(M-2)
   Sequential Growth % — derived: Rolling(M)/Rolling(M-3) - 1
@@ -116,17 +116,20 @@ def fetch_year(page, year, timeout_s=45):
 # --------------------------------------------------------------------------- #
 
 def _fmt_revenue(raw):
-    """'401255' → '401,255'"""
+    """'401,255' → 401255 (a real number, so Sheets stores it numerically)."""
     try:
-        return f"{int(str(raw).replace(',', '')):,}"
+        return int(str(raw).replace(",", ""))
     except (ValueError, TypeError):
         return str(raw)
 
 
 def _fmt_pct(raw):
-    """'36.8' or '36.8%' → '36.8%'; empty → ''"""
+    """'36.8' or '36.8%' → 0.368 (a real number; display via percent format)."""
     s = str(raw).strip().rstrip("%")
-    return f"{s}%" if s else ""
+    try:
+        return float(s) / 100
+    except ValueError:
+        return ""
 
 
 def _open_worksheet(credential_path):
@@ -198,10 +201,12 @@ def recompute_derived(ws):
       Rolling 3 Month Rev  = Rev(r) + Rev(r+1) + Rev(r+2)
       Sequential Growth %  = Rolling(r) / Rolling(r+3) - 1   (vs prior 3-mo block)
 
-    Revenue is stored as text (commas), so each reference is cleaned inline with
-    REGEXREPLACE+VALUE. Formulas resolve to "" until their window is populated,
-    and are rewritten for the current row layout each run so they survive
-    top-of-sheet inserts. Columns are located by header name.
+    Revenue cells are real numbers; each reference is still cleaned inline with
+    REGEXREPLACE+VALUE as a defensive measure (handles any legacy text cells).
+    Formulas resolve to "" until their window is populated, and are rewritten
+    for the current row layout each run so they survive top-of-sheet inserts.
+    Columns are located by header name. Also (re)applies number formats to the
+    scraped Revenue and YoY columns so inserted rows stay consistent.
     """
     header = ws.row_values(1)
     n = len(ws.get_all_values())
@@ -215,6 +220,7 @@ def recompute_derived(ws):
         return None
 
     i_rev = find(lambda h: h.startswith("revenue"))
+    i_yoy = find(lambda h: h.replace(" ", "").startswith("yoy"))
     i_mom = find(lambda h: h.replace(" ", "").startswith("mom"))
     i_roll = find(lambda h: "rolling" in h)
     i_seq = find(lambda h: h.startswith("sequential") or "growth" in h)
@@ -225,10 +231,15 @@ def recompute_derived(ws):
     R = _col_letter(i_rev)
     E = _col_letter(i_roll) if i_roll is not None else None
 
-    def clean(cell):  # text like "416,975" -> numeric value
+    def clean(cell):  # defensive: numeric cells pass through, legacy text is cleaned
         return f'VALUE(REGEXREPLACE(TO_TEXT({cell}),"[^0-9.-]",""))'
 
     updates, fmts = [], []
+    # Keep the scraped columns consistently formatted (values are real numbers).
+    fmts.append((f"{R}2:{R}{n}", "num"))
+    if i_yoy is not None:
+        Y = _col_letter(i_yoy)
+        fmts.append((f"{Y}2:{Y}{n}", "pct"))
     if i_mom is not None:
         C = _col_letter(i_mom)
         col = [[f'=IF(OR({R}{r}="",{R}{r+1}=""),"",'
