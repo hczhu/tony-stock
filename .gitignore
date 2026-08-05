@@ -17,3 +17,6 @@ skills-lock.json
 # Misc
 tmp-files/
 .claude/
+
+# Python bytecode
+__pycache__/

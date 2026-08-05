@@ -4,17 +4,23 @@
 Source:  https://www.nanya.com/en/IR/36/Monthly%20Revenue?Year=YYYY  (one page per year)
 Target:  "Nanya monthly revenue" sheet in spreadsheet 16_qvEStKUx_nwWoLoTeZRRaSuDlgxBmcPJnDdawsgaY
 
-Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3M Revenue | 3M Growth %
+Sheet columns: Date | Revenue | MoM% | YoY% | Rolling 3M Revenue | 3M Growth % |
+               Revenue in $B
   Date               — "YYYY-MM" string (e.g. "2026-04")
   Revenue            — integer number (NT$ thousands), displayed with a #,##0 format
-  MoM%               — number (e.g. 0.403), displayed with a percent format
-  YoY%               — same
+  MoM%               — derived: rev(M)/rev(M-1) - 1
+  YoY%               — derived: rev(M)/rev(M-12) - 1
   Rolling 3M Revenue — trailing 3-month revenue sum, rev(M)+rev(M-1)+rev(M-2)
   3M Growth %        — growth of the rolling 3M vs the previous, non-overlapping
                        3-month block: (rolling(M)-rolling(M-3))/rolling(M-3)*100
+  Revenue in $B      — derived: rev(M) converted to US$ billions at the live
+                       GOOGLEFINANCE USDTWD rate
 
-The last two columns (E, F) are derived from Revenue and recomputed on every
-run, so they self-heal and stay in sync regardless of row order.
+Columns C-F are all derived from Revenue and recomputed on every run, so they
+self-heal and stay in sync regardless of row order. Deriving MoM%/YoY% rather
+than storing the source's own figures means a month completes as soon as its
+revenue lands, instead of waiting for the Monthly Revenue table to publish the
+percentages about a week after the press release.
 
 Idempotent: reads existing Date values from the sheet on start-up and only
 inserts rows whose Date is not already present. Safe to re-run at any time.
@@ -68,6 +74,8 @@ FIRST_YEAR = 2013
 HEADERS = ["Date", "Revenue", "MoM%", "YoY%"]
 # Derived columns (E, F) recomputed from Revenue on every run.
 DERIVED_HEADERS = ["Rolling 3M Revenue", "3M Growth %"]
+# Revenue (NT$ thousands) converted to US$ billions at the live FX rate.
+USD_HEADER = "Revenue in $B"
 OLD_HEADERS_PREFIX = ["Year", "Month"]  # detect pre-migration format
 
 MONTHS = [
@@ -296,14 +304,29 @@ def get_existing_keys(ws):
 
 
 def recompute_derived(ws):
-    """(Re)write the Rolling-3M-Revenue and 3M-Growth-% columns (E, F) as live
-    Google Sheets formulas that reference the Revenue column (B).
+    """(Re)write the MoM%, YoY%, Rolling-3M-Revenue, 3M-Growth-% and
+    Revenue-in-$B columns (C, D, E, F, G) as live Google Sheets formulas
+    referencing the Revenue column (B).
 
-    Rows are reverse-chronological (newest at row 2), so for the month on row r,
-    the two preceding months are rows r+1 and r+2:
+    Rows are reverse-chronological (newest at row 2), so for the month on row r
+    the preceding months are rows r+1, r+2, ... and the year-ago month is r+12:
+      MoM%               = Revenue(r) / Revenue(r+1) - 1
+      YoY%               = Revenue(r) / Revenue(r+12) - 1
       Rolling 3M Revenue = Revenue(r) + Revenue(r+1) + Revenue(r+2)
       3M Growth %        = (Rolling(r) - Rolling(r+3)) / Rolling(r+3)
                            i.e. vs the previous, non-overlapping 3-month block.
+      Revenue in $B      = Revenue(r) / USDTWD / 10^6, at the live FX rate
+                           (revenue is NT$ thousands).
+
+    Deriving MoM%/YoY% from Revenue rather than storing the figures the source
+    reports means a month is complete as soon as its revenue lands — the Press
+    Releases page publishes revenue about a week before the Monthly Revenue
+    table publishes the percentages, and those rows used to sit half-empty in
+    between.
+
+    C and D stop short of the oldest rows (no r+1 / no r+12 to divide by): those
+    cells keep whatever the source reported, since a formula there would only
+    resolve to "" and discard real data.
 
     Revenue cells are real numbers; each cell is still cleaned with
     REGEXREPLACE+VALUE inside the formula as a defensive measure (handles any
@@ -334,11 +357,37 @@ def recompute_derived(ws):
         out.append([rolling, growth])
 
     ws.update(out, range_name=f"E1:F{n}", value_input_option="USER_ENTERED")
-    # Display formats: thousands for revenue sums, percent for growth columns.
+
+    # MoM% (C) needs row r+1, YoY% (D) needs row r+12. Only write as far down as
+    # those references exist so the oldest rows keep their source-reported
+    # values instead of being blanked by a formula that cannot resolve.
+    mom_last = n - 1
+    if mom_last >= 2:
+        ws.update([[f'=IF(OR(B{r}="",B{r+1}=""),"",B{r}/B{r+1}-1)']
+                   for r in range(2, mom_last + 1)],
+                  range_name=f"C2:C{mom_last}", value_input_option="USER_ENTERED")
+    yoy_last = n - 12
+    if yoy_last >= 2:
+        ws.update([[f'=IF(OR(B{r}="",B{r+12}=""),"",B{r}/B{r+12}-1)']
+                   for r in range(2, yoy_last + 1)],
+                  range_name=f"D2:D{yoy_last}", value_input_option="USER_ENTERED")
+    print(f"  wrote MoM% for rows 2..{mom_last}, YoY% for rows 2..{yoy_last}",
+          file=sys.stderr)
+
+    # Revenue in US$ billions (G): revenue is NT$ thousands, so divide by the
+    # live TWD-per-USD rate to get US$ thousands, then by 10^6 for billions.
+    # Depends only on the row's own revenue, so it covers every data row.
+    ws.update([[USD_HEADER]] +
+              [[f'=IF(B{r}="","",B{r}/GOOGLEFINANCE("CURRENCY:USDTWD")/10^6)']
+               for r in range(2, n + 1)],
+              range_name=f"G1:G{n}", value_input_option="USER_ENTERED")
+    # Display formats: thousands for revenue sums, percent for growth columns,
+    # two decimals for the US$-billions figure.
     ws.format(f"B2:B{n}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}})
     ws.format(f"C2:D{n}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
     ws.format(f"E2:E{n}", {"numberFormat": {"type": "NUMBER", "pattern": "#,##0"}})
     ws.format(f"F2:F{n}", {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}})
+    ws.format(f"G2:G{n}", {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
     print(f"  wrote derived-column formulas for {n - 1} row(s)", file=sys.stderr)
 
 
@@ -376,11 +425,20 @@ def main():
     _migrate_if_needed(ws)
     all_rows = ws.get_all_values()
     existing = {r[0] for r in all_rows[1:] if r and r[0]}
-    # Rows whose MoM% (col C) is blank are candidates for /36 refinement — i.e.
-    # /15-sourced supplement rows waiting for the precise Monthly Revenue figures.
-    # Map date -> 1-based sheet row number.
-    blank_mom = {r[0]: i + 1 for i, r in enumerate(all_rows)
-                 if i >= 1 and r and r[0] and (len(r) < 3 or not str(r[2]).strip())}
+    # Map date -> (1-based sheet row number, revenue as currently stored). The
+    # /36 table is authoritative, so any row whose revenue differs from it gets
+    # refined — chiefly /15 supplement rows, whose press-release figures are
+    # rounded to the nearest thousand (e.g. 29,388,000 vs the precise
+    # 29,388,309). This replaces an older "MoM% is blank" test, which no longer
+    # identifies anything now that MoM% is a formula on every row.
+    def _as_int(s):
+        try:
+            return int(str(s).replace(",", "").replace("$", "").strip())
+        except (ValueError, AttributeError):
+            return None
+
+    sheet_rev = {r[0]: (i + 1, _as_int(r[1]) if len(r) > 1 else None)
+                 for i, r in enumerate(all_rows) if i >= 1 and r and r[0]}
     print(f"  {len(existing)} existing row(s)", file=sys.stderr)
 
     session = None
@@ -418,27 +476,31 @@ def main():
                 print("no table (JS?)", file=sys.stderr)
             continue
 
-        # Build formatted rows; the /36 table is authoritative (precise revenue
-        # + MoM%/YoY%). Insert genuinely-new months; refine any existing rows
-        # that lack MoM% (i.e. earlier /15 supplements) with the precise data.
+        # The /36 table is authoritative for revenue. Insert genuinely-new
+        # months; refine an existing row when its stored revenue differs (a /15
+        # supplement carrying a rounded press-release figure). MoM%/YoY% are not
+        # written here — recompute_derived derives them from the revenue.
         new_here = 0
         for m, rev, mom, yoy in raw_rows:
             date = f"{year}-{m:02d}"
-            row = [date, _fmt_revenue(rev), _fmt_pct(mom), _fmt_pct(yoy)]
+            row = [date, _fmt_revenue(rev)]
             authoritative.add(date)
             if date not in existing:
-                all_new_rows.append(row)
+                all_new_rows.append(row + ["", ""])
                 existing.add(date)
                 new_here += 1
-            elif date in blank_mom and row[2]:
-                refines.append((blank_mom.pop(date), row))
+            else:
+                sheet_row, stored = sheet_rev.get(date, (None, None))
+                if sheet_row and stored != row[1]:
+                    refines.append((sheet_row, row))
         print(f"{new_here} new row(s)", file=sys.stderr)
 
         time.sleep(args.delay)
 
     # Supplement: pull the latest month(s) from the Press Releases page and add
-    # any not yet present (and not covered by /36 this run). Revenue only —
-    # MoM%/YoY% stay blank until /36 publishes and refines the row.
+    # any not yet present (and not covered by /36 this run). Revenue only — the
+    # MoM%/YoY% formulas pick it up immediately, and /36 later refines the
+    # revenue itself from the rounded press-release figure to the precise one.
     if not args.no_pr:
         pr_year = args.year or args.end
         print(f"  press releases {pr_year} ...", file=sys.stderr, end=" ")
@@ -456,11 +518,12 @@ def main():
             print(f"FAIL: {exc}", file=sys.stderr)
 
     # Refine existing rows first (in place), before inserts shift row numbers.
+    # Only A:B — C..F are formulas owned by recompute_derived.
     for sheet_row, row in refines:
-        ws.update([row], range_name=f"A{sheet_row}:D{sheet_row}",
+        ws.update([row], range_name=f"A{sheet_row}:B{sheet_row}",
                   value_input_option="RAW")
     if refines:
-        print(f"  refined {len(refines)} supplement row(s) with /36 data",
+        print(f"  refined {len(refines)} row(s) with precise /36 revenue",
               file=sys.stderr)
 
     if all_new_rows:
