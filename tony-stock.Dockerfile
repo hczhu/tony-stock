@@ -39,7 +39,12 @@ COPY nginx-smart-stocker.conf /etc/nginx/sites-available/smart-stocker
 RUN ln -sf /etc/nginx/sites-available/smart-stocker /etc/nginx/sites-enabled/smart-stocker \
     && rm -f /etc/nginx/sites-enabled/default
 
-RUN echo '*/15 * * * * root cd /opt/smart-stock && /usr/local/bin/python3 smart-stocker.py > /tmp/portfolio.html.tmp 2>> /var/log/smart-stocker.log && [ -s /tmp/portfolio.html.tmp ] && mv /tmp/portfolio.html.tmp /var/www/smart-stocker/portfolio.html' \
+# Renders the dashboard and publishes it. The publish step validates the render
+# (a network blip leaves smart-stocker.py unable to reach Google OAuth, so it
+# emits a data-less page and still exits 0) and stages the temp file inside the
+# web root so the final mv is an atomic same-filesystem rename.
+COPY --chmod=0755 scripts/publish-portfolio.sh /usr/local/bin/publish-portfolio.sh
+RUN echo '*/15 * * * * root /usr/local/bin/publish-portfolio.sh' \
     > /etc/cron.d/smart-stocker \
     && chmod 0644 /etc/cron.d/smart-stocker
 

@@ -32,7 +32,14 @@ bash deploy-tony-stock.sh   # build + install systemd service + start
 - `/var/www/smart-stocker` → `/var/www/smart-stocker` (HTML output, persisted on host)
 
 **Cron jobs** (inside container, defined in `tony-stock.Dockerfile`):
-- `smart-stocker` (every 15 min): runs `smart-stocker.py`, writes stdout to a temp file, and atomically replaces `portfolio.html` only on success.
+- `smart-stocker` (every 15 min): runs `scripts/publish-portfolio.sh`, which renders
+  `smart-stocker.py` and replaces `portfolio.html` only if the render is usable.
+  Note `smart-stocker.py` exits 0 even when it cannot reach Google OAuth — it emits
+  structurally valid HTML with no portfolio data — so the publish step checks for
+  data rows rather than merely a non-empty file. The temp file is staged inside
+  `/var/www/smart-stocker/` so the final `mv` is an atomic same-filesystem rename;
+  staging in `/tmp` would cross a filesystem boundary (container overlay vs. host
+  bind mount), making `mv` a non-atomic copy that nginx can read mid-write.
 - `screening-cube` (daily 06:00 UTC): runs `screening_cube_viz.py --fetch` to regenerate the stock-screening trend reports (see below).
 
 **Nginx** listens on port 8888 (host network):
@@ -100,5 +107,5 @@ docker exec tony-stock bash -c "cd /opt/smart-stock && python3 screening_cube_vi
 After merging a PR in smart-stock, run inside the container to refresh immediately:
 
 ```bash
-docker exec tony-stock bash -c "cd /opt/smart-stock && python3 smart-stocker.py > /tmp/portfolio.html.tmp && mv /tmp/portfolio.html.tmp /var/www/smart-stocker/portfolio.html"
+docker exec tony-stock /usr/local/bin/publish-portfolio.sh
 ```
