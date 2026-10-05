@@ -23,6 +23,7 @@ cd "$HOME/tony-stock" || { echo "cannot cd to repo" >>"$LOG"; exit 1; }
   claude -p "$(cat "$PROMPT_FILE")" \
     --model sonnet \
     --dangerously-skip-permissions \
+    </dev/null \
     2>&1
   echo
 } >>"$LOG" 2>&1
