@@ -59,7 +59,9 @@ RUN echo '0 6 * * * root cd /opt/smart-stock && /usr/local/bin/python3 screening
 # Daily (06:15 UTC, just after screening-cube): publish the screening trend
 # reports to the tickertick.com S3 bucket. AWS creds come from the runtime-
 # mounted /root/.aws (HOME=/root so the CLI finds them under cron); requires the
-# tickertick_server IAM user to allow s3:PutObject/ListBucket on charts/.
+# tickertick_indexer IAM user to allow s3:PutObject/ListBucket on charts/.
+# ~/.aws is also mounted at /home/hc/.aws so an absolute credentials symlink
+# resolves (see run-tony-stock.sh).
 RUN echo '15 6 * * * root HOME=/root /usr/local/bin/aws s3 sync /var/www/smart-stocker/screening s3://tickertick.com/charts >> /var/log/charts-s3-sync.log 2>&1' \
     > /etc/cron.d/charts-s3-sync \
     && chmod 0644 /etc/cron.d/charts-s3-sync
