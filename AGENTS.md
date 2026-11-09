@@ -102,6 +102,16 @@ python3 screening_cube_viz.py --out /tmp/x     # render elsewhere
 docker exec tony-stock bash -c "cd /opt/smart-stock && python3 screening_cube_viz.py --fetch --snapshot /tmp/screening_snapshot.json"
 ```
 
+To run every chart job on demand (the same steps as the daily crons), use the
+master script — it regenerates all chart pages and the index:
+
+```bash
+docker exec tony-stock bash /opt/tony-stock/scripts/run-all-viz.sh            # fetch sheets + render
+docker exec tony-stock bash /opt/tony-stock/scripts/run-all-viz.sh --scrape --s3   # + scrapers first, S3 upload after
+```
+
+`--no-fetch` renders from the saved snapshots instead; `--help` lists the flags.
+
 ## Updating the web server after a smart-stock code change
 
 After merging a PR in smart-stock, run inside the container to refresh immediately:
