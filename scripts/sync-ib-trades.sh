@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Daily sync of IBKR trade-confirmation emails (Gmail label:IB-trades) into the
 # Transactions Google spreadsheet, via a headless Claude Code run.
-# Installed as a weekday 1:30pm local cron job (see `crontab -l`).
+# Installed as a weekday 4pm local cron job (see `crontab -l`).
 # Logs to ~/.cron-logs/sync-ib-trades.log.
 set -u
 
