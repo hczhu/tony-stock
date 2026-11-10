@@ -8,9 +8,9 @@
 #   1. (--scrape) the data scrapers that feed the chart sheets: OpenRouter
 #      usage, Nanya monthly revenue, TSMC monthly revenue.
 #   2. screening_cube_viz.py, which renders every chart page (the screening
-#      tabs plus the Memory, AI demand, Meta vs. Google, Datadog and ServiceNow
-#      pages) and
-#      the index into /var/www/smart-stocker/screening/.
+#      tabs plus the Memory, AI demand, Meta vs. Google, Datadog, ServiceNow
+#      and Cloudflare pages) and the index into
+#      /var/www/smart-stocker/screening/.
 #   3. (--s3) upload the pages to s3://tickertick.com/charts.
 #
 # Flags:
