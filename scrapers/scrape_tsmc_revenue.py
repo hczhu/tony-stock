@@ -142,7 +142,10 @@ def _open_worksheet(credential_path):
         "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_file(credential_path, scopes=scopes)
-    book = gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    # BackOffHTTPClient retries Sheets 429s (60 reads/min quota, shared with
+    # the chart and portfolio jobs) with exponential backoff.
+    client = gspread.authorize(creds, http_client=gspread.BackOffHTTPClient)
+    book = client.open_by_key(SPREADSHEET_ID)
     try:
         ws = book.worksheet(SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
