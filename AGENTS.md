@@ -112,6 +112,22 @@ docker exec tony-stock bash /opt/tony-stock/scripts/run-all-viz.sh --scrape --s3
 
 `--no-fetch` renders from the saved snapshots instead; `--help` lists the flags.
 
+### Updating the "Stock screening" spreadsheet
+
+When filling in or editing numbers in the spreadsheet:
+
+1. **Use formulas wherever possible.** Enter each raw number once and reference
+   it elsewhere, instead of copying it into several cells. For example, write
+   `=O17*F17/Z17*10^6` rather than a computed value.
+2. **Reuse the previous quarter's formula.** A new quarter's row should use the
+   same formula structure as the same company's row in the prior quarter.
+3. **Carry forward missing numbers.** If a number is still unavailable after a
+   best-effort search, reuse the previous quarter's value (for example,
+   employee headcount, which most companies report only annually).
+4. **Estimate when reasonable.** If a figure can be sensibly derived (from a
+   guidance range midpoint, a disclosed mix percentage, or a partial-period
+   figure), estimate it, and tell the user which cells are estimates.
+
 ## Updating the web server after a smart-stock code change
 
 After merging a PR in smart-stock, run inside the container to refresh immediately:
