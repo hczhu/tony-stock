@@ -557,6 +557,7 @@ def write_sheet(day, summary, credential_path, reset=False):
                   file=sys.stderr)
 
     values = data_row(day, accelerators, summary)
+    last = column_letter(len(values))
     row, has_data = find_date_row(ws, day)
     first = HEADER_ROWS + 1
     if row:
@@ -570,9 +571,18 @@ def write_sheet(day, summary, credential_path, reset=False):
         ws.update([values], f"A{first}:{column_letter(len(values))}{first}",
                   value_input_option="USER_ENTERED")
         print(f"wrote first row ({day}) in '{SHEET_NAME}'", file=sys.stderr)
+        row = first
     else:
         ws.insert_row(values, index=first, value_input_option="USER_ENTERED")
         print(f"inserted {day} at row {first} of '{SHEET_NAME}'", file=sys.stderr)
+        row = first
+    # Set formats explicitly: new rows/columns inherit their neighbours' format
+    # (e.g. column A's date format would turn 6.88 into 1900-01-05).
+    ws.batch_format([
+        {"range": f"A{row}", "format": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}},
+        {"range": f"B{row}:{last}{row}",
+         "format": {"numberFormat": {"type": "NUMBER", "pattern": "0.00##"}}},
+    ])
 
 
 def main():
