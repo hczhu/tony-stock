@@ -67,37 +67,31 @@ Options: `-o/--output DIR` (default `./scraped`), `--timeout SECONDS`
 
 ## scrape_aws_accelerator_prices.py
 
-Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official APIs
-(via boto3, installed in the container) and replaces the **"AWS" worksheet** of
-the "GPU&ASIC pricing" spreadsheet (`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`).
-It watches mainstream AI chips: NVIDIA GPUs in the P instance family newer
-than A100, and AWS Trainium / Inferentia2. Chips are identified by the names
-`ec2:DescribeInstanceTypes` reports (not a hardcoded list), so new ones such
-as NVIDIA Vera Rubin or Trainium4 appear automatically once AWS lists them.
-Only instances with at least 8 accelerators (`--min-accel`). Each chip is
-watched in the first region of `REGION_PREFERENCE` (largest first: us-east-1,
-us-east-2, us-west-2, ...) that sells it, e.g. Trainium2/3 in us-east-2;
-`--regions` overrides (`all` for every region). GB200 isn't covered: it's
-only sold as UltraServer Capacity Blocks in the Dallas Local Zone, which the
-API won't price for this account. One row per (instance type, region):
+Records EC2 GPU / Trainium / Inferentia rental prices from AWS's official APIs
+(via boto3, installed in the container) as a daily history in the **"AWS"
+worksheet** of the "GPU&ASIC pricing" spreadsheet
+(`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`):
 
-| Columns | Source |
-|---|---|
-| `on_demand_hr`, `ri_1yr_hr`, `ri_3yr_hr` | Price List API (`pricing:GetProducts`); RI = cheapest effective Standard rate (hourly + upfront amortized) |
-| `spot_hr`, `spot_az` | `ec2:DescribeSpotPriceHistory`, cheapest AZ right now |
-| `cb_hr`, `cb_start`, `cb_az` | `ec2:DescribeCapacityBlockOfferings`, cheapest 24 h offering (`--cb-hours`) |
-
-Every price also has a `*_per_accel_hr` column (divided by the GPU / chip count).
+- Header rows: `Date`, then one column group per accelerator (H100, H200,
+  B200, B300, Inferentia2, Trainium, Trainium2, Trainium3, ...) with three
+  sub-columns: On-Demand, 1-year RI and Spot **hour rate per accelerator**,
+  averaged over that accelerator's instance types.
+- Each run writes one row: it overwrites today's row if present, else inserts
+  a new row at the top (newest first). Older rows are never rewritten.
+- Watched chips come from `ec2:DescribeInstanceTypes`, not a hardcoded list:
+  NVIDIA P-family GPUs newer than A100 and AWS Trainium / Inferentia2. New
+  chips (Vera Rubin, Trainium4, ...) get a new column group automatically.
+- Only instances with at least 8 accelerators (`--min-accel`). Each chip is
+  priced in the first `REGION_PREFERENCE` region that sells it (us-east-1,
+  then us-east-2, ...); `--regions` overrides.
 
 ```bash
-python3 scrape_aws_accelerator_prices.py                        # → "AWS" sheet
-python3 scrape_aws_accelerator_prices.py --dry-run --cheapest --match 'p5|p6|trn|inf'
-python3 scrape_aws_accelerator_prices.py -o prices.csv          # CSV file instead
+python3 scrape_aws_accelerator_prices.py              # upsert today's row
+python3 scrape_aws_accelerator_prices.py --dry-run    # print it as CSV instead
 ```
 
 - AWS credentials: defaults to `--profile diag` (or `$AWS_PROFILE`), which has
-  `pricing:GetProducts`, `pricing:GetAttributeValues`, `ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`,
-  `ec2:DescribeSpotPriceHistory` and `ec2:DescribeCapacityBlockOfferings`.
-- Linux, shared tenancy only; China (CNY) regions skipped. Spot and Capacity
-  Blocks are only queried in regions enabled for the account, not Local Zones.
-- Not included: Savings Plans.
+  `pricing:GetProducts`, `ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`
+  and `ec2:DescribeSpotPriceHistory`.
+- GB200 isn't covered: it's only sold as UltraServer Capacity Blocks in the
+  Dallas Local Zone, which the API won't price for this account.
