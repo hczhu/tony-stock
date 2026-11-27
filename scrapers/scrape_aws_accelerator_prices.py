@@ -17,8 +17,10 @@ container; on the host, `pip install --user boto3` first):
 Covers the mainstream AI chips in the ACCELERATORS watch list (NVIDIA H100 and
 newer, Trainium, Inferentia2) among EC2's "GPU instance" and "Machine Learning
 ASIC Instances" families, for instance sizes with at least --min-accel
-(default 8) accelerators, Linux, shared tenancy, no pre-installed software, in
-us-east-1 (or the regions given with --regions; "all" for every region).
+(default 8) accelerators, Linux, shared tenancy, no pre-installed software.
+Each chip is watched in one region: us-east-1, or for chips not sold there
+(Trainium2/3) the largest region that sells them (WATCH_REGIONS). --regions
+overrides this for all chips ("all" for every region).
 China regions, which are priced in CNY, are skipped.
 Spot and Capacity Block prices are only fetched in regions enabled for the
 account (opt-in regions such as ap-south-2 are left blank) and not in Local
@@ -50,7 +52,7 @@ Credentials: needs an AWS identity allowed `pricing:GetProducts`,
 `ec2:DescribeCapacityBlockOfferings`. On hp-omen the `diag` profile has them,
 so it is the default here (override with --profile or AWS_PROFILE).
 
-    python3 scrape_aws_accelerator_prices.py                      # us-east-1 → "AWS" sheet
+    python3 scrape_aws_accelerator_prices.py                      # watch regions → "AWS" sheet
     python3 scrape_aws_accelerator_prices.py --dry-run            # CSV to stdout, no sheet
     python3 scrape_aws_accelerator_prices.py -o prices.csv        # CSV file, no sheet
     python3 scrape_aws_accelerator_prices.py --regions us-east-1,us-east-2,us-west-2
@@ -118,6 +120,18 @@ ACCELERATORS = {
 # EC2 errors meaning "no Capacity Blocks for this type here", not a failure.
 UNSUPPORTED_CB_ERRORS = {"InvalidParameterValue", "InvalidAction"}
 
+# Region each chip is watched in (when --regions isn't given): us-east-1,
+# except chips AWS doesn't sell there, which are watched in the largest region
+# that does. GB200 (p6e-gb200) is only in the Dallas Local Zone and sold only
+# as UltraServer Capacity Blocks, whose offerings the API won't show without
+# an AWS Support limit increase, so it has no price to watch.
+DEFAULT_REGION = "us-east-1"
+WATCH_REGIONS = {
+    "trn2": "us-east-2",
+    "trn2u": "us-east-2",
+    "trn3": "us-east-2",
+}
+
 HOURS = {"1yr": 365 * 24, "3yr": 3 * 365 * 24}
 
 PRICE_COLUMNS = ["on_demand", "ri_1yr", "ri_3yr", "spot", "cb"]
@@ -184,13 +198,22 @@ def fetch_products(client, regions, market):
     return products
 
 
-def accelerator_name(instance_type):
+def by_prefix(table, instance_type, default=""):
+    """Longest instance-type prefix match in table."""
     prefix = instance_type.split(".")[0]
     while prefix:
-        if prefix in ACCELERATORS:
-            return ACCELERATORS[prefix]
+        if prefix in table:
+            return table[prefix]
         prefix = prefix[:-1]
-    return ""
+    return default
+
+
+def accelerator_name(instance_type):
+    return by_prefix(ACCELERATORS, instance_type)
+
+
+def watch_region(instance_type):
+    return by_prefix(WATCH_REGIONS, instance_type, DEFAULT_REGION)
 
 
 def on_demand_rate(terms):
@@ -245,17 +268,20 @@ def base_row(attrs):
     }
 
 
-def watched(product, min_accel):
-    """On the ACCELERATORS watch list and has at least min_accel accelerators."""
+def watched(product, min_accel, per_chip_region):
+    """On the ACCELERATORS watch list, has at least min_accel accelerators and,
+    if per_chip_region, is in the chip's watch region."""
     attrs = product["product"]["attributes"]
-    return (accelerator_name(attrs["instanceType"]) != ""
-            and (to_number(attrs.get("gpu")) or 0) >= min_accel)
+    itype = attrs["instanceType"]
+    return (accelerator_name(itype) != ""
+            and (to_number(attrs.get("gpu")) or 0) >= min_accel
+            and (not per_chip_region or attrs.get("regionCode") == watch_region(itype)))
 
 
-def build_rows(od_products, cb_products, min_accel):
+def build_rows(od_products, cb_products, min_accel, per_chip_region):
     """Rows keyed by (instance_type, region) from the price list, watch list only."""
-    od_products = [p for p in od_products if watched(p, min_accel)]
-    cb_products = [p for p in cb_products if watched(p, min_accel)]
+    od_products = [p for p in od_products if watched(p, min_accel, per_chip_region)]
+    cb_products = [p for p in cb_products if watched(p, min_accel, per_chip_region)]
     rows = {}
     for p in od_products:
         od = on_demand_rate(p["terms"])
@@ -459,8 +485,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "diag"),
                     help="AWS CLI profile (default: $AWS_PROFILE or diag)")
-    ap.add_argument("--regions", default="us-east-1",
-                    help="comma-separated region codes, or 'all' (default: %(default)s)")
+    ap.add_argument("--regions",
+                    help="comma-separated region codes, or 'all' (default: each "
+                         "chip's watch region: us-east-1, or WATCH_REGIONS)")
     ap.add_argument("--min-accel", type=float, default=8,
                     help="minimum accelerators (GPUs / chips) per instance (default: 8)")
     ap.add_argument("--match", help="regex an instance type must match, e.g. 'p5|trn|inf'")
@@ -481,12 +508,17 @@ def main():
                     help="Google service-account key (default: %(default)s)")
     args = ap.parse_args()
 
-    regions = (None if args.regions == "all"
-               else [r.strip() for r in args.regions.split(",")])
+    per_chip_region = not args.regions
+    if per_chip_region:
+        regions = sorted({DEFAULT_REGION, *WATCH_REGIONS.values()})
+    elif args.regions == "all":
+        regions = None
+    else:
+        regions = [r.strip() for r in args.regions.split(",")]
     client = Aws(args.profile)
     od = fetch_products(client, regions, "OnDemand")
     cb = [] if args.no_cb else fetch_products(client, regions, "CapacityBlock")
-    rows, cb_keys = build_rows(od, cb, args.min_accel)
+    rows, cb_keys = build_rows(od, cb, args.min_accel, per_chip_region)
     if args.match:
         rows = {k: r for k, r in rows.items() if re.search(args.match, k[0])}
     if not (args.no_spot and args.no_cb):
