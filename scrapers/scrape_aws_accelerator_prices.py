@@ -16,9 +16,10 @@ container; on the host, `pip install --user boto3` first):
 
 Covers the mainstream AI chips in the ACCELERATORS watch list (NVIDIA H100 and
 newer, Trainium, Inferentia2) among EC2's "GPU instance" and "Machine Learning
-ASIC Instances" families, for
-Linux, shared tenancy, no pre-installed software, in every region (or the ones
-given with --regions). China regions, which are priced in CNY, are skipped.
+ASIC Instances" families, for instance sizes with at least --min-accel
+(default 8) accelerators, Linux, shared tenancy, no pre-installed software, in
+us-east-1 (or the regions given with --regions; "all" for every region).
+China regions, which are priced in CNY, are skipped.
 Spot and Capacity Block prices are only fetched in regions enabled for the
 account (opt-in regions such as ap-south-2 are left blank) and not in Local
 Zones.
@@ -49,10 +50,11 @@ Credentials: needs an AWS identity allowed `pricing:GetProducts`,
 `ec2:DescribeCapacityBlockOfferings`. On hp-omen the `diag` profile has them,
 so it is the default here (override with --profile or AWS_PROFILE).
 
-    python3 scrape_aws_accelerator_prices.py                      # all regions → "AWS" sheet
+    python3 scrape_aws_accelerator_prices.py                      # us-east-1 → "AWS" sheet
     python3 scrape_aws_accelerator_prices.py --dry-run            # CSV to stdout, no sheet
     python3 scrape_aws_accelerator_prices.py -o prices.csv        # CSV file, no sheet
     python3 scrape_aws_accelerator_prices.py --regions us-east-1,us-east-2,us-west-2
+    python3 scrape_aws_accelerator_prices.py --regions all --min-accel 1
     python3 scrape_aws_accelerator_prices.py --cheapest           # cheapest region per type
     python3 scrape_aws_accelerator_prices.py --match 'p5|p6|trn|inf'
     python3 scrape_aws_accelerator_prices.py --no-spot --no-cb    # list prices only
@@ -243,14 +245,17 @@ def base_row(attrs):
     }
 
 
-def watched(product):
-    return accelerator_name(product["product"]["attributes"]["instanceType"]) != ""
+def watched(product, min_accel):
+    """On the ACCELERATORS watch list and has at least min_accel accelerators."""
+    attrs = product["product"]["attributes"]
+    return (accelerator_name(attrs["instanceType"]) != ""
+            and (to_number(attrs.get("gpu")) or 0) >= min_accel)
 
 
-def build_rows(od_products, cb_products):
+def build_rows(od_products, cb_products, min_accel):
     """Rows keyed by (instance_type, region) from the price list, watch list only."""
-    od_products = [p for p in od_products if watched(p)]
-    cb_products = [p for p in cb_products if watched(p)]
+    od_products = [p for p in od_products if watched(p, min_accel)]
+    cb_products = [p for p in cb_products if watched(p, min_accel)]
     rows = {}
     for p in od_products:
         od = on_demand_rate(p["terms"])
@@ -454,7 +459,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "diag"),
                     help="AWS CLI profile (default: $AWS_PROFILE or diag)")
-    ap.add_argument("--regions", help="comma-separated region codes (default: all)")
+    ap.add_argument("--regions", default="us-east-1",
+                    help="comma-separated region codes, or 'all' (default: %(default)s)")
+    ap.add_argument("--min-accel", type=float, default=8,
+                    help="minimum accelerators (GPUs / chips) per instance (default: 8)")
     ap.add_argument("--match", help="regex an instance type must match, e.g. 'p5|trn|inf'")
     ap.add_argument("--cheapest", action="store_true",
                     help="keep only the cheapest region per instance type "
@@ -473,11 +481,12 @@ def main():
                     help="Google service-account key (default: %(default)s)")
     args = ap.parse_args()
 
-    regions = [r.strip() for r in args.regions.split(",")] if args.regions else None
+    regions = (None if args.regions == "all"
+               else [r.strip() for r in args.regions.split(",")])
     client = Aws(args.profile)
     od = fetch_products(client, regions, "OnDemand")
     cb = [] if args.no_cb else fetch_products(client, regions, "CapacityBlock")
-    rows, cb_keys = build_rows(od, cb)
+    rows, cb_keys = build_rows(od, cb, args.min_accel)
     if args.match:
         rows = {k: r for k, r in rows.items() if re.search(args.match, k[0])}
     if not (args.no_spot and args.no_cb):
