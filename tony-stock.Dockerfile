@@ -97,6 +97,15 @@ RUN echo '30 16 * * * root HOME=/root /usr/local/bin/python3 /opt/tony-stock/scr
     > /etc/cron.d/tsmc-revenue \
     && chmod 0644 /etc/cron.d/tsmc-revenue
 
+# Daily (14:00 UTC = 9-10 am US Eastern): upsert today's row of AWS GPU /
+# Trainium / Inferentia rental prices (On-Demand, RI, Capacity Block, Spot per
+# accelerator-hour) in the "AWS" sheet of the "GPU&ASIC pricing" spreadsheet.
+# Uses the `diag` AWS profile from the mounted /root/.aws; idempotent (rerunning
+# the same day overwrites that day's row).
+RUN echo '0 14 * * * root HOME=/root /usr/local/bin/python3 /opt/tony-stock/scrapers/scrape_aws_accelerator_prices.py >> /var/log/aws-accelerator-prices.log 2>&1' \
+    > /etc/cron.d/aws-accelerator-prices \
+    && chmod 0644 /etc/cron.d/aws-accelerator-prices
+
 # Daily (07:30 UTC): rotate the cron logs so they don't grow unbounded
 # (smart-stocker.log in particular grows every 15 min). copytruncate keeps the
 # same inode so the append-mode cron jobs keep writing without a restart.

@@ -6,7 +6,8 @@
 #
 # Steps:
 #   1. (--scrape) the data scrapers that feed the chart sheets: OpenRouter
-#      usage, Nanya monthly revenue, TSMC monthly revenue.
+#      usage, Nanya monthly revenue, TSMC monthly revenue, AWS accelerator
+#      rental prices.
 #   2. screening_cube_viz.py, which renders every chart page (the screening
 #      tabs plus the Google, Memory, AI demand, Meta vs. Google, Digital
 #      advertising, Datadog, ServiceNow, Cloudflare, SaaS customers and Roblox
@@ -44,6 +45,8 @@ if (( SCRAPE )); then
     "$PY" "$SCRAPERS/scrape_nanya_revenue.py" --year "$(date +%Y)"
     step "TSMC monthly revenue"
     "$PY" "$SCRAPERS/scrape_tsmc_revenue.py" --year "$(date +%Y)"
+    step "AWS accelerator rental prices"
+    "$PY" "$SCRAPERS/scrape_aws_accelerator_prices.py"
 fi
 
 step "Chart pages + index${FETCH:+ (fetching sheets)}"
