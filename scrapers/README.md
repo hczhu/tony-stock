@@ -70,12 +70,16 @@ Options: `-o/--output DIR` (default `./scraped`), `--timeout SECONDS`
 Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official APIs
 (via boto3, installed in the container) and replaces the **"AWS" worksheet** of
 the "GPU&ASIC pricing" spreadsheet (`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`).
-It watches mainstream AI chips only (NVIDIA H100 and newer, Trainium,
-Inferentia2), instances with at least 8 accelerators (`--min-accel`). Each
-chip is watched in us-east-1, except Trainium2/3, which aren't sold there and
-are watched in us-east-2 (`WATCH_REGIONS`); `--regions` overrides (`all` for
-every region). GB200 isn't covered: it's only sold as UltraServer Capacity
-Blocks in the Dallas Local Zone, which the API won't price for this account. One row per (instance type, region):
+It watches mainstream AI chips: NVIDIA GPUs in the P instance family newer
+than A100, and AWS Trainium / Inferentia2. Chips are identified by the names
+`ec2:DescribeInstanceTypes` reports (not a hardcoded list), so new ones such
+as NVIDIA Vera Rubin or Trainium4 appear automatically once AWS lists them.
+Only instances with at least 8 accelerators (`--min-accel`). Each chip is
+watched in the first region of `REGION_PREFERENCE` (largest first: us-east-1,
+us-east-2, us-west-2, ...) that sells it, e.g. Trainium2/3 in us-east-2;
+`--regions` overrides (`all` for every region). GB200 isn't covered: it's
+only sold as UltraServer Capacity Blocks in the Dallas Local Zone, which the
+API won't price for this account. One row per (instance type, region):
 
 | Columns | Source |
 |---|---|
@@ -92,7 +96,7 @@ python3 scrape_aws_accelerator_prices.py -o prices.csv          # CSV file inste
 ```
 
 - AWS credentials: defaults to `--profile diag` (or `$AWS_PROFILE`), which has
-  `pricing:GetProducts`, `pricing:GetAttributeValues`, `ec2:DescribeRegions`,
+  `pricing:GetProducts`, `pricing:GetAttributeValues`, `ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`,
   `ec2:DescribeSpotPriceHistory` and `ec2:DescribeCapacityBlockOfferings`.
 - Linux, shared tenancy only; China (CNY) regions skipped. Spot and Capacity
   Blocks are only queried in regions enabled for the account, not Local Zones.
