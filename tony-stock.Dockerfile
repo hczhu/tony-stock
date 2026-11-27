@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir \
     gspread \
     oauth2client \
     requests \
-    beautifulsoup4
+    beautifulsoup4 \
+    boto3
 
 # Headless-browser scraper (scrapers/scrape_urls.py). Installs Playwright and
 # Chromium with its system dependencies.
