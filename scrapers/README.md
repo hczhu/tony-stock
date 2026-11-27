@@ -64,3 +64,23 @@ Options: `-o/--output DIR` (default `./scraped`), `--timeout SECONDS`
   `bash deploy-tony-stock.sh` (or `bash build-tony-stock.sh && bash run-tony-stock.sh`).
 - The container mounts `/var/www/smart-stocker` and `/opt/smart-stock` from the
   host; write output to a mounted path, or `docker cp` results out as above.
+
+## scrape_aws_accelerator_prices.py
+
+Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official
+**Price List Query API** (`pricing:GetProducts`) via the `aws` CLI, and writes
+CSV with one row per (instance type, region): accelerator, chip count and
+memory, On-Demand $/hr, and the cheapest effective 1yr / 3yr Standard Reserved
+Instance $/hr (hourly + upfront amortized), each also per accelerator.
+
+```bash
+python3 scrape_aws_accelerator_prices.py -o prices.csv          # all regions
+python3 scrape_aws_accelerator_prices.py --cheapest --match 'p5|p6|trn|inf'
+python3 scrape_aws_accelerator_prices.py --regions us-east-1,us-east-2
+```
+
+- Needs an AWS identity allowed `pricing:GetProducts`. The default profile on
+  hp-omen isn't, so the script defaults to `--profile diag` (or `$AWS_PROFILE`).
+- Linux, shared tenancy only; China (CNY) regions skipped.
+- Not included: Spot, EC2 Capacity Blocks for ML (listed at $0 in the price
+  list since they're priced per offering), Savings Plans.
