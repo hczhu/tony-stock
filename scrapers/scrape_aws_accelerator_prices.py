@@ -5,8 +5,9 @@ Each run computes, per accelerator, the hourly rate per accelerator for
 On-Demand, 1-year Reserved Instances and Spot, and writes one row to the "AWS"
 worksheet of the "GPU&ASIC pricing" spreadsheet:
 
-    row 1:  Date | H100                          | H200 | ...
-    row 2:       | On demand | 1 year RI | Spot  | ...      (per-accelerator $/hr)
+    row 1:  Date | H100                                          | H200 | ...
+    row 2:       | On demand | 1y RI | 3y RI | Capacity block | Spot | ...
+                 (all hour rates per accelerator)
     row 3+: one row per date, newest first
 
 If a row for today's date exists it is overwritten; otherwise a new row is
@@ -23,6 +24,8 @@ Sources (boto3, installed in the tony-stock container; on the host,
   * `ec2:DescribeInstanceTypes`: each instance type's accelerator name and
     count, which decides what is watched.
   * `ec2:DescribeSpotPriceHistory`: the current Spot price per AZ.
+  * `ec2:DescribeCapacityBlockOfferings`: Capacity Block offerings for sale,
+    per instance type, and per UltraServer for rack-scale GB200 (ULTRASERVERS).
 
 What is watched: NVIDIA GPUs in the P instance family newer than A100 (H100,
 H200, B200, B300, ...) and AWS Trainium / Inferentia (not first-gen
@@ -37,13 +40,15 @@ this ("all" for every region).
 Rates, per accelerator-hour, averaged over all of the accelerator's instance
 types in its region(s):
   On demand   On-Demand price / accelerator count
-  1 year RI   cheapest effective 1-year Standard RI rate (hourly fee + upfront
-              amortized over the term, across No/Partial/All Upfront)
+  1/3 year RI cheapest effective Standard RI rate for the term (hourly fee +
+              upfront amortized over the term, across No/Partial/All Upfront)
+  Capacity    cheapest Capacity Block offering for a --cb-hours (default 24)
+  block       block: upfront fee / hours / accelerators
   Spot        lowest current Spot price across the region's AZs
 
 Credentials: an AWS identity allowed `pricing:GetProducts`,
-`ec2:DescribeRegions`, `ec2:DescribeInstanceTypes` and
-`ec2:DescribeSpotPriceHistory`. On hp-omen the `diag` profile has them, so it
+`ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`,
+`ec2:DescribeSpotPriceHistory` and `ec2:DescribeCapacityBlockOfferings`. On hp-omen the `diag` profile has them, so it
 is the default (override with --profile or AWS_PROFILE).
 
     python3 scrape_aws_accelerator_prices.py              # upsert today's row
@@ -91,7 +96,8 @@ AWS_CHIP_MAKERS = {"AWS", "Annapurna"}  # Trainium3 reports "Annapurna"
 
 # Each chip is watched in the first of these regions that sells it, unless
 # --regions is given. GB200 is only sold in the Dallas Local Zone as
-# UltraServer Capacity Blocks (4 GPUs per instance), so it never shows.
+# UltraServer Capacity Blocks (4 GPUs per instance), so it's priced
+# separately via ULTRASERVERS.
 REGION_PREFERENCE = [
     "us-east-1", "us-east-2", "us-west-2", "eu-west-1", "eu-central-1",
     "ap-northeast-1", "eu-west-2", "ap-southeast-2", "ap-south-1", "eu-north-1",
@@ -100,20 +106,40 @@ REGION_PREFERENCE = [
 
 # Column-group order for a new sheet; accelerators found later are appended.
 DEFAULT_ACCELERATOR_ORDER = [
-    "H100", "H200", "B200", "B300", "Inferentia2", "Trainium", "Trainium2", "Trainium3",
+    "H100", "H200", "B200", "B300", "GB200",
+    "Inferentia2", "Trainium", "Trainium2", "Trainium3",
 ]
+
+# Rack-scale chips sold only as UltraServer Capacity Blocks. They don't fit
+# the per-instance pipeline (4 GPUs per instance, in a Local Zone that
+# DescribeInstanceTypes doesn't describe), and EC2 has no API that lists
+# UltraServer types, so they are named here: chip → (region, UltraServer
+# types; the "xN" suffix is the GPU count). AWS only shows these offerings to
+# accounts with a Capacity Block limit increase; otherwise the columns stay
+# blank and a note is printed.
+ULTRASERVERS = {
+    "GB200": ("us-east-1", ["u-p6e-gb200x72", "u-p6e-gb200x36"]),
+}
 
 # (row key, sub-column header) for each accelerator's column group.
 RATES = [
     ("on_demand", "On demand hour rate per accelerator"),
     ("ri_1yr", "1 year RI hour rate per accelerator"),
+    ("ri_3yr", "3 year RI hour rate per accelerator"),
+    ("cb", "Capacity block hour rate per accelerator"),
     ("spot", "Spot hour rate per accelerator"),
 ]
 DATE_HEADER = "Date"
 HEADER_ROWS = 2
 
-RI_1YR_HOURS = 365 * 24
+RI_HOURS = {"1yr": 365 * 24, "3yr": 3 * 365 * 24}
 
+# EC2 errors meaning "no Capacity Blocks for this type here", not a failure.
+UNSUPPORTED_CB_ERRORS = {"InvalidParameterValue", "InvalidAction"}
+CB_LIMIT_ERROR = "CapacityBlockDescribeLimitExceeded"
+
+# DescribeCapacityBlockOfferings has a low request-rate limit; adaptive retry
+# mode backs off client-side when throttled.
 BOTO_CONFIG = Config(retries={"max_attempts": 10, "mode": "adaptive"})
 
 
@@ -208,19 +234,20 @@ def on_demand_rate(terms):
     return min(rates) if rates else None
 
 
-def ri_1yr_rate(terms):
-    """Cheapest effective 1-year Standard RI $/hr (hourly + amortized upfront)."""
+def ri_rate(terms, term):
+    """Cheapest effective Standard RI $/hr for term ("1yr"/"3yr"): hourly fee +
+    upfront amortized over the term, across No/Partial/All Upfront."""
     best = None
     for t in terms.get("Reserved", {}).values():
         attrs = t["termAttributes"]
-        if attrs.get("OfferingClass") != "standard" or attrs.get("LeaseContractLength") != "1yr":
+        if attrs.get("OfferingClass") != "standard" or attrs.get("LeaseContractLength") != term:
             continue
         dims = list(t["priceDimensions"].values())
         if any("USD" not in d["pricePerUnit"] for d in dims):
             continue  # China regions price in CNY
         hourly = sum(float(d["pricePerUnit"]["USD"]) for d in dims if d["unit"] == "Hrs")
         upfront = sum(float(d["pricePerUnit"]["USD"]) for d in dims if d["unit"] == "Quantity")
-        rate = hourly + upfront / RI_1YR_HOURS
+        rate = hourly + upfront / RI_HOURS[term]
         if rate > 0 and (best is None or rate < best):
             best = rate
     return best
@@ -238,7 +265,7 @@ def build_rows(od_products, cb_products, chips, min_accel):
     def new_row(attrs):
         accelerator, count = chips[attrs["instanceType"]]
         return {"accelerator": accelerator.partition(" ")[2], "count": count,
-                "on_demand": None, "ri_1yr": None, "spot": None}
+                **{k: None for k, _ in RATES}}
 
     rows = {}
     for p in filter(keep, od_products):
@@ -249,11 +276,16 @@ def build_rows(od_products, cb_products, chips, min_accel):
         key = (attrs["instanceType"], attrs.get("regionCode", ""))
         # Same type/region can appear under more than one SKU; keep the cheapest.
         if key not in rows or od < rows[key]["on_demand"]:
-            rows[key] = dict(new_row(attrs), on_demand=od, ri_1yr=ri_1yr_rate(p["terms"]))
+            rows[key] = dict(new_row(attrs), on_demand=od,
+                             ri_1yr=ri_rate(p["terms"], "1yr"),
+                             ri_3yr=ri_rate(p["terms"], "3yr"))
+    cb_keys = set()
     for p in filter(keep, cb_products):
         attrs = p["product"]["attributes"]
-        rows.setdefault((attrs["instanceType"], attrs.get("regionCode", "")), new_row(attrs))
-    return rows
+        key = (attrs["instanceType"], attrs.get("regionCode", ""))
+        cb_keys.add(key)
+        rows.setdefault(key, new_row(attrs))
+    return rows, cb_keys
 
 
 def keep_preferred_region(rows, regions):
@@ -286,27 +318,103 @@ def fetch_spot(ec2, instance_types):
     return best
 
 
-def add_spot_prices(rows, client, enabled, workers):
-    by_region = {}
-    for itype, region in rows:
-        if region in enabled:
-            by_region.setdefault(region, set()).add(itype)
-    for region in by_region:
+def cheapest_offering_rate(offerings, units_per_offering):
+    """Cheapest offering $/hr per unit; units_per_offering(o) → units (GPUs or
+    instances) the offering covers."""
+    best = None
+    for o in offerings:
+        if o.get("CurrencyCode", "USD") != "USD":
+            continue
+        dur = o["CapacityBlockDurationHours"] + o.get("CapacityBlockDurationMinutes", 0) / 60
+        units = units_per_offering(o)
+        if dur <= 0 or not units:
+            continue
+        rate = float(o["UpfrontFee"]) / dur / units
+        best = rate if best is None else min(best, rate)
+    return best
+
+
+def fetch_capacity_block(ec2, instance_type, hours):
+    """Cheapest Capacity Block $/instance-hour for a hours-long block, or None."""
+    out = ec2.describe_capacity_block_offerings(
+        InstanceType=instance_type, InstanceCount=1, CapacityDurationHours=hours)
+    return cheapest_offering_rate(out["CapacityBlockOfferings"],
+                                  lambda o: o.get("InstanceCount", 1))
+
+
+def fetch_ultraserver_cb(ec2, ultraserver_types, hours):
+    """Cheapest UltraServer Capacity Block $/GPU-hour across types, or None."""
+    best = None
+    for utype in ultraserver_types:
+        gpus = int(utype.rsplit("x", 1)[1])
+        out = ec2.describe_capacity_block_offerings(
+            UltraserverType=utype, UltraserverCount=1, CapacityDurationHours=hours)
+        rate = cheapest_offering_rate(out["CapacityBlockOfferings"],
+                                      lambda o: gpus * o.get("UltraserverCount", 1))
+        if rate is not None:
+            best = rate if best is None else min(best, rate)
+    return best
+
+
+def add_market_prices(rows, cb_keys, client, enabled, args):
+    """Fill rows' spot and cb (per instance-hour); return {chip: cb $/GPU-hour}
+    for ULTRASERVERS chips."""
+    jobs = []
+    if not args.no_spot:
+        by_region = {}
+        for itype, region in rows:
+            if region in enabled:
+                by_region.setdefault(region, set()).add(itype)
+        jobs += [("spot", region, types) for region, types in by_region.items()]
+    if not args.no_cb:
+        jobs += [("cb", region, itype) for itype, region in cb_keys
+                 if region in enabled and (itype, region) in rows]
+        jobs += [("ultra", region, (chip, tuple(types)))
+                 for chip, (region, types) in ULTRASERVERS.items() if region in enabled]
+    for _, region, _ in jobs:
         client.ec2(region)  # create clients before the threads start
 
-    def run(item):
-        region, types = item
-        try:
-            return region, fetch_spot(client.ec2(region), types)
-        except (BotoCoreError, ClientError) as e:
-            warn(f"spot {region}: {e}")
-            return region, {}
+    notes = []
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for region, prices in pool.map(run, by_region.items()):
-            for itype, price in prices.items():
-                if (itype, region) in rows:
-                    rows[(itype, region)]["spot"] = price
+    def run(job):
+        kind, region, what = job
+        ec2 = client.ec2(region)
+        try:
+            if kind == "spot":
+                return job, fetch_spot(ec2, what)
+            if kind == "cb":
+                return job, fetch_capacity_block(ec2, what, args.cb_hours)
+            return job, fetch_ultraserver_cb(ec2, what[1], args.cb_hours)
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            name = what[0] if kind == "ultra" else what if kind == "cb" else ""
+            if kind != "spot" and code in UNSUPPORTED_CB_ERRORS:
+                notes.append(f"{name}@{region}: no Capacity Blocks")
+            elif kind != "spot" and code == CB_LIMIT_ERROR:
+                notes.append(f"{name}@{region}: Capacity Block offerings hidden "
+                             f"for this account ({code})")
+            else:
+                warn(f"{kind} {region} {name}: {e}")
+        except BotoCoreError as e:
+            warn(f"{kind} {region}: {e}")
+        return job, None
+
+    ultra = {}
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for (kind, region, what), result in pool.map(run, jobs):
+            if result is None:
+                continue
+            if kind == "spot":
+                for itype, price in result.items():
+                    if (itype, region) in rows:
+                        rows[(itype, region)]["spot"] = price
+            elif kind == "cb":
+                rows[(what, region)]["cb"] = result
+            else:
+                ultra[what[0]] = result
+    for note in sorted(notes):
+        print(f"note: {note}", file=sys.stderr)
+    return ultra
 
 
 def summarize(rows):
@@ -335,11 +443,13 @@ def column_letter(n):
 
 
 def ordered_accelerators(existing, found):
-    """Existing column groups first, then new ones (default order, then name)."""
-    new = [c for c in found if c not in existing]
-    new.sort(key=lambda c: (DEFAULT_ACCELERATOR_ORDER.index(c)
-                            if c in DEFAULT_ACCELERATOR_ORDER else len(DEFAULT_ACCELERATOR_ORDER), c))
-    return list(existing) + new
+    """Existing column groups first, then any missing DEFAULT_ACCELERATOR_ORDER
+    ones (always shown, even with no prices), then newly found ones by name."""
+    order = list(existing)
+    for chip in DEFAULT_ACCELERATOR_ORDER + sorted(found):
+        if chip not in order:
+            order.append(chip)
+    return order
 
 
 def data_row(day, accelerators, summary):
@@ -410,7 +520,7 @@ def find_date_row(ws, day):
     return None, any(v != "" for v in data)
 
 
-def write_sheet(day, summary, credential_path):
+def write_sheet(day, summary, credential_path, reset=False):
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -427,7 +537,11 @@ def write_sheet(day, summary, credential_path):
 
     existing = existing_accelerators(ws)
     if existing is None:
-        # Empty or old layout: start over with fresh headers.
+        # Empty, or a different header layout. Rebuilding clears the sheet, so
+        # refuse to discard existing data unless asked.
+        if ws.row_values(1) and not reset:
+            sys.exit(f"'{SHEET_NAME}' has a different header layout; rerun with "
+                     "--reset-sheet to clear it and start over (its rows are lost).")
         ws.clear()
         ws.unmerge_cells(f"A1:{column_letter(ws.col_count)}{ws.row_count}")
         # Keep one row below the header: Sheets can't freeze every row.
@@ -472,6 +586,11 @@ def main():
                     help="minimum accelerators (GPUs / chips) per instance (default: 8)")
     ap.add_argument("--match", help="regex an instance type must match, e.g. 'p5|trn'")
     ap.add_argument("--no-spot", action="store_true", help="skip Spot prices")
+    ap.add_argument("--no-cb", action="store_true", help="skip Capacity Block offerings")
+    ap.add_argument("--cb-hours", type=int, default=24,
+                    help="Capacity Block length to price, in hours (default 24)")
+    ap.add_argument("--reset-sheet", action="store_true",
+                    help="clear the sheet and rewrite its headers if its layout differs")
     ap.add_argument("--workers", type=int, default=16,
                     help="parallel Spot API calls (default 16)")
     ap.add_argument("-o", "--output",
@@ -509,16 +628,18 @@ def main():
                                   key=lambda kv: order.get(kv[0], len(order))))
     chips = fetch_chip_info(client, types_by_region)
 
-    rows = build_rows(od, cb, chips, args.min_accel)
+    rows, cb_keys = build_rows(od, cb, chips, args.min_accel)
     if args.match:
         rows = {k: r for k, r in rows.items() if re.search(args.match, k[0])}
     if per_chip_region:
         rows = keep_preferred_region(rows, regions)
-    if not args.no_spot:
-        add_spot_prices(rows, client, enabled, args.workers)
+    cb_keys = {k for k in cb_keys if k in rows}
+    ultra = add_market_prices(rows, cb_keys, client, enabled, args)
 
     summary = {chip: rates for chip, rates in summarize(rows).items()
                if any(v is not None for v in rates.values())}
+    for chip, rate in ultra.items():
+        summary.setdefault(chip, {k: None for k, _ in RATES})["cb"] = round(rate, 4)
     day = datetime.now(timezone.utc).date()
 
     if args.dry_run or args.output == "-":
@@ -528,7 +649,7 @@ def main():
             write_csv(day, summary, f)
         print(f"wrote {args.output}", file=sys.stderr)
     else:
-        write_sheet(day, summary, args.credential)
+        write_sheet(day, summary, args.credential, args.reset_sheet)
 
 
 if __name__ == "__main__":

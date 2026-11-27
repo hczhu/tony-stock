@@ -73,9 +73,10 @@ worksheet** of the "GPU&ASIC pricing" spreadsheet
 (`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`):
 
 - Header rows: `Date`, then one column group per accelerator (H100, H200,
-  B200, B300, Inferentia2, Trainium, Trainium2, Trainium3, ...) with three
-  sub-columns: On-Demand, 1-year RI and Spot **hour rate per accelerator**,
-  averaged over that accelerator's instance types.
+  B200, B300, GB200, Inferentia2, Trainium, Trainium2, Trainium3, ...) with
+  five sub-columns: On-Demand, 1-year RI, 3-year RI, Capacity Block (24 h,
+  `--cb-hours`) and Spot **hour rate per accelerator**, averaged over that
+  accelerator's instance types.
 - Each run writes one row: it overwrites today's row if present, else inserts
   a new row at the top (newest first). Older rows are never rewritten.
 - Watched chips come from `ec2:DescribeInstanceTypes`, not a hardcoded list:
@@ -90,8 +91,13 @@ python3 scrape_aws_accelerator_prices.py              # upsert today's row
 python3 scrape_aws_accelerator_prices.py --dry-run    # print it as CSV instead
 ```
 
+- If the sheet's header layout differs from the script's (e.g. after adding
+  columns), it refuses to write; `--reset-sheet` clears the sheet and starts
+  over (its rows are lost).
 - AWS credentials: defaults to `--profile diag` (or `$AWS_PROFILE`), which has
-  `pricing:GetProducts`, `ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`
-  and `ec2:DescribeSpotPriceHistory`.
-- GB200 isn't covered: it's only sold as UltraServer Capacity Blocks in the
-  Dallas Local Zone, which the API won't price for this account.
+  `pricing:GetProducts`, `ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`,
+  `ec2:DescribeSpotPriceHistory` and `ec2:DescribeCapacityBlockOfferings`.
+- GB200 is rack-scale, sold only as UltraServer Capacity Blocks (Dallas Local
+  Zone), and priced separately (`ULTRASERVERS`). AWS hides those offerings
+  from accounts without a Capacity Block limit increase
+  (`CapacityBlockDescribeLimitExceeded`), so its columns stay blank for now.
