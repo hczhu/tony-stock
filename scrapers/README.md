@@ -70,7 +70,9 @@ Options: `-o/--output DIR` (default `./scraped`), `--timeout SECONDS`
 Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official APIs
 (via boto3, installed in the container) and replaces the **"AWS" worksheet** of
 the "GPU&ASIC pricing" spreadsheet (`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`).
-One row per (instance type, region):
+It watches mainstream AI chips only (NVIDIA H100 and newer, Trainium,
+Inferentia2), instances with at least 8 accelerators (`--min-accel`), in
+us-east-1 (`--regions`, or `all`). One row per (instance type, region):
 
 | Columns | Source |
 |---|---|
