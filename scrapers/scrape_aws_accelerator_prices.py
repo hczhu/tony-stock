@@ -14,8 +14,9 @@ container; on the host, `pip install --user boto3` first):
     because their price is set per offering, so this is the only source of
     their price.
 
-Covers every EC2 instance whose instanceFamily is "GPU instance" (NVIDIA / AMD
-GPUs) or "Machine Learning ASIC Instances" (Trainium, Inferentia, Gaudi), for
+Covers the mainstream AI chips in the ACCELERATORS watch list (NVIDIA H100 and
+newer, Trainium, Inferentia2) among EC2's "GPU instance" and "Machine Learning
+ASIC Instances" families, for
 Linux, shared tenancy, no pre-installed software, in every region (or the ones
 given with --regions). China regions, which are priced in CNY, are skipped.
 Spot and Capacity Block prices are only fetched in regions enabled for the
@@ -92,14 +93,11 @@ BASE_FILTERS = {
     "licenseModel": "No License required",
 }
 
-# Accelerator by instance-type prefix (the API gives the count and memory,
-# not the chip name). Longest prefix wins; unknown types are left blank.
+# Watch list: instance-type prefix → accelerator. Only these mainstream AI
+# chips are kept: NVIDIA data-center GPUs newer than A100 (Hopper, Blackwell)
+# and AWS's own Trainium / Inferentia2. Longest prefix wins; any instance type
+# not matching a prefix here is dropped.
 ACCELERATORS = {
-    "p2": "NVIDIA K80",
-    "p3": "NVIDIA V100",
-    "p3dn": "NVIDIA V100 32GB",
-    "p4d": "NVIDIA A100 40GB",
-    "p4de": "NVIDIA A100 80GB",
     "p5": "NVIDIA H100",
     "p5e": "NVIDIA H200",
     "p5en": "NVIDIA H200",
@@ -107,22 +105,6 @@ ACCELERATORS = {
     "p6-b300": "NVIDIA B300",
     "p6e-gb200": "NVIDIA GB200",
     "p6e-gb300": "NVIDIA GB300",
-    "g2": "NVIDIA K520",
-    "g3": "NVIDIA M60",
-    "g3s": "NVIDIA M60",
-    "g4dn": "NVIDIA T4",
-    "g4ad": "AMD Radeon Pro V520",
-    "g5": "NVIDIA A10G",
-    "g5g": "NVIDIA T4G",
-    "g6": "NVIDIA L4",
-    "g6f": "NVIDIA L4 (fractional)",
-    "gr6": "NVIDIA L4",
-    "gr6f": "NVIDIA L4 (fractional)",
-    "g6e": "NVIDIA L40S",
-    "g7e": "NVIDIA RTX PRO 6000 Blackwell",
-    "dl1": "Intel Gaudi",
-    "dl2q": "Qualcomm AI 100",
-    "inf1": "AWS Inferentia",
     "inf2": "AWS Inferentia2",
     "trn1": "AWS Trainium",
     "trn1n": "AWS Trainium",
@@ -261,8 +243,14 @@ def base_row(attrs):
     }
 
 
+def watched(product):
+    return accelerator_name(product["product"]["attributes"]["instanceType"]) != ""
+
+
 def build_rows(od_products, cb_products):
-    """Rows keyed by (instance_type, region) from the price list."""
+    """Rows keyed by (instance_type, region) from the price list, watch list only."""
+    od_products = [p for p in od_products if watched(p)]
+    cb_products = [p for p in cb_products if watched(p)]
     rows = {}
     for p in od_products:
         od = on_demand_rate(p["terms"])
