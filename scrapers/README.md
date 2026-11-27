@@ -67,20 +67,28 @@ Options: `-o/--output DIR` (default `./scraped`), `--timeout SECONDS`
 
 ## scrape_aws_accelerator_prices.py
 
-Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official
-**Price List Query API** (`pricing:GetProducts`) via the `aws` CLI, and writes
-CSV with one row per (instance type, region): accelerator, chip count and
-memory, On-Demand $/hr, and the cheapest effective 1yr / 3yr Standard Reserved
-Instance $/hr (hourly + upfront amortized), each also per accelerator.
+Fetches EC2 GPU / Trainium / Inferentia rental prices from AWS's official APIs
+(via boto3, installed in the container) and replaces the **"AWS" worksheet** of
+the "GPU&ASIC pricing" spreadsheet (`19rqW5crirhEEuz-lfcmoeB7aQPJW_T_7d8sOxTPhhM0`).
+One row per (instance type, region):
+
+| Columns | Source |
+|---|---|
+| `on_demand_hr`, `ri_1yr_hr`, `ri_3yr_hr` | Price List API (`pricing:GetProducts`); RI = cheapest effective Standard rate (hourly + upfront amortized) |
+| `spot_hr`, `spot_az` | `ec2:DescribeSpotPriceHistory`, cheapest AZ right now |
+| `cb_hr`, `cb_start`, `cb_az` | `ec2:DescribeCapacityBlockOfferings`, cheapest 24 h offering (`--cb-hours`) |
+
+Every price also has a `*_per_accel_hr` column (divided by the GPU / chip count).
 
 ```bash
-python3 scrape_aws_accelerator_prices.py -o prices.csv          # all regions
-python3 scrape_aws_accelerator_prices.py --cheapest --match 'p5|p6|trn|inf'
-python3 scrape_aws_accelerator_prices.py --regions us-east-1,us-east-2
+python3 scrape_aws_accelerator_prices.py                        # → "AWS" sheet
+python3 scrape_aws_accelerator_prices.py --dry-run --cheapest --match 'p5|p6|trn|inf'
+python3 scrape_aws_accelerator_prices.py -o prices.csv          # CSV file instead
 ```
 
-- Needs an AWS identity allowed `pricing:GetProducts`. The default profile on
-  hp-omen isn't, so the script defaults to `--profile diag` (or `$AWS_PROFILE`).
-- Linux, shared tenancy only; China (CNY) regions skipped.
-- Not included: Spot, EC2 Capacity Blocks for ML (listed at $0 in the price
-  list since they're priced per offering), Savings Plans.
+- AWS credentials: defaults to `--profile diag` (or `$AWS_PROFILE`), which has
+  `pricing:GetProducts`, `pricing:GetAttributeValues`, `ec2:DescribeRegions`,
+  `ec2:DescribeSpotPriceHistory` and `ec2:DescribeCapacityBlockOfferings`.
+- Linux, shared tenancy only; China (CNY) regions skipped. Spot and Capacity
+  Blocks are only queried in regions enabled for the account, not Local Zones.
+- Not included: Savings Plans.
