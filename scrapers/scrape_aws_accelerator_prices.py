@@ -14,13 +14,18 @@ container; on the host, `pip install --user boto3` first):
     because their price is set per offering, so this is the only source of
     their price.
 
-Covers the mainstream AI chips in the ACCELERATORS watch list (NVIDIA H100 and
-newer, Trainium, Inferentia2) among EC2's "GPU instance" and "Machine Learning
-ASIC Instances" families, for instance sizes with at least --min-accel
-(default 8) accelerators, Linux, shared tenancy, no pre-installed software.
-Each chip is watched in one region: us-east-1, or for chips not sold there
-(Trainium2/3) the largest region that sells them (WATCH_REGIONS). --regions
-overrides this for all chips ("all" for every region).
+  * `ec2:DescribeInstanceTypes`: the accelerator name and count of each
+    instance type, which decides what is watched (see below).
+
+Watches mainstream AI chips: NVIDIA GPUs in the P instance family newer than
+A100 (H100, H200, B200, B300, ...) and AWS Trainium / Inferentia (not first-gen
+Inferentia). Chips are recognized by the names DescribeInstanceTypes reports,
+not a hardcoded list, so new ones such as NVIDIA Vera Rubin or Trainium4 are
+picked up automatically once AWS lists them. Only instance sizes with at least
+--min-accel (default 8) accelerators; Linux, shared tenancy, no pre-installed
+software. Each chip is watched in one region: the first region in
+REGION_PREFERENCE (largest first: us-east-1, us-east-2, us-west-2, ...) that
+sells it. --regions overrides this for all chips ("all" for every region).
 China regions, which are priced in CNY, are skipped.
 Spot and Capacity Block prices are only fetched in regions enabled for the
 account (opt-in regions such as ap-south-2 are left blank) and not in Local
@@ -40,19 +45,19 @@ service-account key; -o FILE / --dry-run write CSV instead. One row per
   cb_hr              cheapest Capacity Block offering for --cb-hours (default
                      24) hours, as upfront fee / hours / instances
   cb_start, cb_az    start time (UTC) and AZ of that offering
-  *_per_accel_hr     the same divided by accel_count (the API's `gpu` field,
-                     which is also the Trainium/Inferentia chip count)
+  *_per_accel_hr     the same divided by accel_count (GPUs or Trainium /
+                     Inferentia chips per instance)
 
 A row exists for every type/region with an On-Demand price or a Capacity Block
 listing, so Capacity-Block-only types (e.g. trn2 in us-east-2) have a blank
 on_demand_hr. Not included: Savings Plans (a separate API).
 
 Credentials: needs an AWS identity allowed `pricing:GetProducts`,
-`ec2:DescribeRegions`, `ec2:DescribeSpotPriceHistory` and
+`ec2:DescribeRegions`, `ec2:DescribeInstanceTypes`, `ec2:DescribeSpotPriceHistory` and
 `ec2:DescribeCapacityBlockOfferings`. On hp-omen the `diag` profile has them,
 so it is the default here (override with --profile or AWS_PROFILE).
 
-    python3 scrape_aws_accelerator_prices.py                      # watch regions → "AWS" sheet
+    python3 scrape_aws_accelerator_prices.py                      # each chip's region → "AWS" sheet
     python3 scrape_aws_accelerator_prices.py --dry-run            # CSV to stdout, no sheet
     python3 scrape_aws_accelerator_prices.py -o prices.csv        # CSV file, no sheet
     python3 scrape_aws_accelerator_prices.py --regions us-east-1,us-east-2,us-west-2
@@ -97,40 +102,29 @@ BASE_FILTERS = {
     "licenseModel": "No License required",
 }
 
-# Watch list: instance-type prefix → accelerator. Only these mainstream AI
-# chips are kept: NVIDIA data-center GPUs newer than A100 (Hopper, Blackwell)
-# and AWS's own Trainium / Inferentia2. Longest prefix wins; any instance type
-# not matching a prefix here is dropped.
-ACCELERATORS = {
-    "p5": "NVIDIA H100",
-    "p5e": "NVIDIA H200",
-    "p5en": "NVIDIA H200",
-    "p6-b200": "NVIDIA B200",
-    "p6-b300": "NVIDIA B300",
-    "p6e-gb200": "NVIDIA GB200",
-    "p6e-gb300": "NVIDIA GB300",
-    "inf2": "AWS Inferentia2",
-    "trn1": "AWS Trainium",
-    "trn1n": "AWS Trainium",
-    "trn2": "AWS Trainium2",
-    "trn2u": "AWS Trainium2",
-    "trn3": "AWS Trainium3",
-}
+# Which chips are watched. Chip names come from ec2:DescribeInstanceTypes, so a
+# new chip (e.g. NVIDIA Vera Rubin, Trainium4) is picked up with no code
+# change as soon as AWS lists it:
+#   * NVIDIA GPUs in AWS's P instance family (its ML-training GPU line; the G
+#     family is graphics/inference cards like L4, L40S, RTX PRO), except the
+#     generations up to A100.
+#   * AWS's own Trainium / Inferentia chips, except first-gen Inferentia.
+OLD_NVIDIA_GPUS = {"K80", "V100", "A100"}
+OLD_AWS_CHIPS = {"Inferentia"}
+AWS_CHIP_MAKERS = {"AWS", "Annapurna"}  # Trainium3 reports "Annapurna"
+
+# Each chip is watched in the first of these regions that sells it (largest
+# regions first), unless --regions is given. E.g. H100 → us-east-1, Trainium2
+# → us-east-2. GB200 is only sold in the Dallas Local Zone as UltraServer
+# Capacity Blocks the API won't price for this account, so it never shows.
+REGION_PREFERENCE = [
+    "us-east-1", "us-east-2", "us-west-2", "eu-west-1", "eu-central-1",
+    "ap-northeast-1", "eu-west-2", "ap-southeast-2", "ap-south-1", "eu-north-1",
+    "ap-northeast-2", "ca-central-1", "us-west-1", "sa-east-1",
+]
 
 # EC2 errors meaning "no Capacity Blocks for this type here", not a failure.
 UNSUPPORTED_CB_ERRORS = {"InvalidParameterValue", "InvalidAction"}
-
-# Region each chip is watched in (when --regions isn't given): us-east-1,
-# except chips AWS doesn't sell there, which are watched in the largest region
-# that does. GB200 (p6e-gb200) is only in the Dallas Local Zone and sold only
-# as UltraServer Capacity Blocks, whose offerings the API won't show without
-# an AWS Support limit increase, so it has no price to watch.
-DEFAULT_REGION = "us-east-1"
-WATCH_REGIONS = {
-    "trn2": "us-east-2",
-    "trn2u": "us-east-2",
-    "trn3": "us-east-2",
-}
 
 HOURS = {"1yr": 365 * 24, "3yr": 3 * 365 * 24}
 
@@ -198,22 +192,43 @@ def fetch_products(client, regions, market):
     return products
 
 
-def by_prefix(table, instance_type, default=""):
-    """Longest instance-type prefix match in table."""
-    prefix = instance_type.split(".")[0]
-    while prefix:
-        if prefix in table:
-            return table[prefix]
-        prefix = prefix[:-1]
-    return default
+def fetch_chip_info(client, types_by_region):
+    """Return {instance_type: (accelerator, count)} from ec2:DescribeInstanceTypes.
+
+    types_by_region: {region: set of instance types listed there}. Each type is
+    described in the first region (in the given order) that lists it.
+    """
+    info = {}
+    for region, types in types_by_region.items():
+        todo = sorted(t for t in types if t not in info)
+        for i in range(0, len(todo), 100):
+            pages = client.ec2(region).get_paginator("describe_instance_types").paginate(
+                Filters=[{"Name": "instance-type", "Values": todo[i:i + 100]}])
+            for page in pages:
+                for it in page["InstanceTypes"]:
+                    chip = chip_of(it)
+                    if chip:
+                        info[it["InstanceType"]] = chip
+    return info
 
 
-def accelerator_name(instance_type):
-    return by_prefix(ACCELERATORS, instance_type)
+def chip_of(instance_type_info):
+    """(display name, count) of an instance type's accelerator, or None."""
+    for dev in instance_type_info.get("GpuInfo", {}).get("Gpus", []):
+        maker = "AWS" if dev["Manufacturer"] in AWS_CHIP_MAKERS else dev["Manufacturer"]
+        return f"{maker} {dev['Name']}", dev["Count"]
+    for dev in instance_type_info.get("NeuronInfo", {}).get("NeuronDevices", []):
+        return f"AWS {dev['Name']}", dev["Count"]
+    return None
 
 
-def watch_region(instance_type):
-    return by_prefix(WATCH_REGIONS, instance_type, DEFAULT_REGION)
+def is_watched_chip(instance_type, accelerator):
+    maker, _, name = accelerator.partition(" ")
+    if maker == "NVIDIA":
+        return instance_type.startswith("p") and name not in OLD_NVIDIA_GPUS
+    if maker == "AWS":
+        return name not in OLD_AWS_CHIPS
+    return False
 
 
 def on_demand_rate(terms):
@@ -253,13 +268,14 @@ def to_number(s):
         return None
 
 
-def base_row(attrs):
+def base_row(attrs, chip):
+    accelerator, count = chip
     return {
         "instance_type": attrs["instanceType"],
-        "accelerator": accelerator_name(attrs["instanceType"]),
+        "accelerator": accelerator,
         "family": attrs.get("instanceFamily", ""),
         "region": attrs.get("regionCode", ""),
-        "accel_count": to_number(attrs.get("gpu")),
+        "accel_count": float(count),
         "accel_memory": "" if attrs.get("gpuMemory") == "NA" else attrs.get("gpuMemory", ""),
         "vcpu": to_number(attrs.get("vcpu")),
         "memory": attrs.get("memory", ""),
@@ -268,26 +284,21 @@ def base_row(attrs):
     }
 
 
-def watched(product, min_accel, per_chip_region):
-    """On the ACCELERATORS watch list, has at least min_accel accelerators and,
-    if per_chip_region, is in the chip's watch region."""
-    attrs = product["product"]["attributes"]
-    itype = attrs["instanceType"]
-    return (accelerator_name(itype) != ""
-            and (to_number(attrs.get("gpu")) or 0) >= min_accel
-            and (not per_chip_region or attrs.get("regionCode") == watch_region(itype)))
+def build_rows(od_products, cb_products, chips, min_accel):
+    """Rows keyed by (instance_type, region) for watched chips with at least
+    min_accel accelerators per instance."""
+    def keep(p):
+        itype = p["product"]["attributes"]["instanceType"]
+        chip = chips.get(itype)
+        return chip and is_watched_chip(itype, chip[0]) and chip[1] >= min_accel
 
-
-def build_rows(od_products, cb_products, min_accel, per_chip_region):
-    """Rows keyed by (instance_type, region) from the price list, watch list only."""
-    od_products = [p for p in od_products if watched(p, min_accel, per_chip_region)]
-    cb_products = [p for p in cb_products if watched(p, min_accel, per_chip_region)]
     rows = {}
-    for p in od_products:
+    for p in filter(keep, od_products):
         od = on_demand_rate(p["terms"])
         if od is None:
             continue
-        row = base_row(p["product"]["attributes"])
+        attrs = p["product"]["attributes"]
+        row = base_row(attrs, chips[attrs["instanceType"]])
         ri = reserved_rates(p["terms"])
         row.update(on_demand_hr=od, ri_1yr_hr=ri.get("1yr"), ri_3yr_hr=ri.get("3yr"))
         key = (row["instance_type"], row["region"])
@@ -295,13 +306,24 @@ def build_rows(od_products, cb_products, min_accel, per_chip_region):
         if key not in rows or od < rows[key]["on_demand_hr"]:
             rows[key] = row
     cb_keys = set()
-    for p in cb_products:
+    for p in filter(keep, cb_products):
         attrs = p["product"]["attributes"]
         key = (attrs["instanceType"], attrs.get("regionCode", ""))
         cb_keys.add(key)
         if key not in rows:
-            rows[key] = base_row(attrs)
+            rows[key] = base_row(attrs, chips[attrs["instanceType"]])
     return rows, cb_keys
+
+
+def keep_preferred_region(rows, regions):
+    """Per chip, keep only the rows in its first region (in regions order)."""
+    rank = {r: i for i, r in enumerate(regions)}
+    best = {}
+    for (_, region), row in rows.items():
+        chip = row["accelerator"]
+        if chip not in best or rank[region] < rank[best[chip]]:
+            best[chip] = region
+    return {k: r for k, r in rows.items() if best[r["accelerator"]] == k[1]}
 
 
 # --------------------------------------------------------------------------- #
@@ -352,8 +374,7 @@ def fetch_capacity_block(ec2, instance_type, hours):
     return best
 
 
-def add_market_prices(rows, cb_keys, client, args):
-    enabled = enabled_regions(client)
+def add_market_prices(rows, cb_keys, client, enabled, args):
     jobs = []
     if not args.no_spot:
         by_region = {}
@@ -486,8 +507,8 @@ def main():
     ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "diag"),
                     help="AWS CLI profile (default: $AWS_PROFILE or diag)")
     ap.add_argument("--regions",
-                    help="comma-separated region codes, or 'all' (default: each "
-                         "chip's watch region: us-east-1, or WATCH_REGIONS)")
+                    help="comma-separated region codes, or 'all' (default: per chip, "
+                         "the first region in REGION_PREFERENCE that sells it)")
     ap.add_argument("--min-accel", type=float, default=8,
                     help="minimum accelerators (GPUs / chips) per instance (default: 8)")
     ap.add_argument("--match", help="regex an instance type must match, e.g. 'p5|trn|inf'")
@@ -508,21 +529,43 @@ def main():
                     help="Google service-account key (default: %(default)s)")
     args = ap.parse_args()
 
+    client = Aws(args.profile)
+    enabled = enabled_regions(client)
     per_chip_region = not args.regions
     if per_chip_region:
-        regions = sorted({DEFAULT_REGION, *WATCH_REGIONS.values()})
+        regions = [r for r in REGION_PREFERENCE if r in enabled]
     elif args.regions == "all":
         regions = None
     else:
         regions = [r.strip() for r in args.regions.split(",")]
-    client = Aws(args.profile)
-    od = fetch_products(client, regions, "OnDemand")
-    cb = [] if args.no_cb else fetch_products(client, regions, "CapacityBlock")
-    rows, cb_keys = build_rows(od, cb, args.min_accel, per_chip_region)
+
+    # Fetch every region at once (4 queries) and filter locally; cheaper than
+    # one query per region when watching several.
+    od = fetch_products(client, None, "OnDemand")
+    cb = [] if args.no_cb else fetch_products(client, None, "CapacityBlock")
+    if regions is not None:
+        od, cb = ([p for p in ps if p["product"]["attributes"].get("regionCode") in regions]
+                  for ps in (od, cb))
+
+    # Describe each listed type in an enabled region that lists it, preferring
+    # the order of `regions` (us-east-1 first).
+    order = {r: i for i, r in enumerate(regions or REGION_PREFERENCE)}
+    types_by_region = {}
+    for p in od + cb:
+        attrs = p["product"]["attributes"]
+        if attrs.get("regionCode") in enabled:
+            types_by_region.setdefault(attrs["regionCode"], set()).add(attrs["instanceType"])
+    types_by_region = dict(sorted(types_by_region.items(),
+                                  key=lambda kv: order.get(kv[0], len(order))))
+    chips = fetch_chip_info(client, types_by_region)
+
+    rows, cb_keys = build_rows(od, cb, chips, args.min_accel)
     if args.match:
         rows = {k: r for k, r in rows.items() if re.search(args.match, k[0])}
+    if per_chip_region:
+        rows = keep_preferred_region(rows, regions)
     if not (args.no_spot and args.no_cb):
-        add_market_prices(rows, cb_keys, client, args)
+        add_market_prices(rows, cb_keys, client, enabled, args)
 
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     # Drop type/regions with no price at all (e.g. Capacity-Block-only types in
